@@ -1,0 +1,53 @@
+import { cn } from "@/lib/cn";
+
+/** AP monogram: an axle journal seen end-on, with a point marker. */
+export function Monogram({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 32 32"
+      className={cn("h-8 w-8", className)}
+      aria-hidden="true"
+    >
+      <rect width="32" height="32" rx="7" fill="#1f5a44" />
+      <circle
+        cx="16"
+        cy="16"
+        r="8.5"
+        fill="none"
+        stroke="#f7f5f0"
+        strokeWidth="2.4"
+      />
+      <circle cx="16" cy="16" r="3" fill="#c89c47" />
+      <path
+        d="M16 3.5v5M16 23.5v5M3.5 16h5M23.5 16h5"
+        stroke="#f7f5f0"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function Wordmark({
+  className,
+  subtitle = true,
+}: {
+  className?: string;
+  subtitle?: boolean;
+}) {
+  return (
+    <span className={cn("inline-flex items-center gap-2.5", className)}>
+      <Monogram />
+      <span className="leading-none">
+        <span className="block text-lg font-bold tracking-tight text-forest">
+          AxlePoint
+        </span>
+        {subtitle && (
+          <span className="mt-0.5 block text-[10px] font-semibold uppercase tracking-[0.22em] text-ink-faint">
+            Industrial
+          </span>
+        )}
+      </span>
+    </span>
+  );
+}

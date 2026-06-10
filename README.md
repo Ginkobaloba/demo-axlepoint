@@ -1,36 +1,54 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AxlePoint Industrial (demo)
 
-## Getting Started
+Asset health and maintenance operations for heavy industry. A fictional
+product demo built by Paradigm Coding Solutions as a portfolio piece:
+predictive failure risk scoring over synthetic sensor telemetry, work order
+management, preventive scheduling, parts inventory, and reporting for a
+100-asset industrial fleet.
 
-First, run the development server:
+Live at https://axlepoint.projectnexuscode.org. Everything in it is
+synthetic: sites, machines, people, parts, and every sensor reading.
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+## Stack
+
+- Next.js 14 (App Router, standalone output), TypeScript, Tailwind CSS
+- SQLite via better-sqlite3, generated at build time by a seeded,
+  deterministic data generator
+- Recharts for telemetry and reporting charts
+- Rolling EWMA + z-score anomaly detection feeding a 0-100 failure risk
+  score per asset, with per-sensor explanations
+
+## Run it
+
+```powershell
+npm ci
+npm run db:generate   # builds data/axlepoint.db (~30s, deterministic)
+npm run dev           # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Production container:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```powershell
+docker build -t demo-axlepoint .
+docker run -p 8102:3000 demo-axlepoint
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Layout
 
-## Learn More
+- `scripts/generate-db.ts` - synthetic fleet generator (assets, telemetry,
+  anomalies, work orders, parts, technicians, PM schedule)
+- `src/lib/anomaly.ts` - EWMA detector shared by the generator and the UI
+- `src/lib/risk.ts` - risk score aggregation and explanation factors
+- `src/lib/queries.ts` - all SQLite access
+- `src/app/page.tsx` - marketing landing
+- `src/app/app/**` - the authenticated demo application
+- `docs/demos/axlepoint/decisions.md` - design decision log
 
-To learn more about Next.js, take a look at the following resources:
+## The ML story
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The demo's detector is a rolling statistical model (EWMA mean and variance
+per sensor channel, z-score thresholding at 3.5 sigma, severity-weighted
+aggregation into an explainable risk score). A production deployment would
+replace the detector with a trained sequence model on historical failure
+data behind the same scoring interface; the UX, explanation panel, and
+work-order drafting flow stay as they are.

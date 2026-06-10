@@ -1,0 +1,30 @@
+# AxlePoint demo container. Three stages: install, build (generates the
+# synthetic SQLite database, then compiles the standalone Next.js server),
+# and a slim runtime. The database ships inside the image; runtime writes
+# (demo work-order drafts) land in the container layer and reset on
+# redeploy, which is the intended behavior for a demo environment.
+
+FROM node:20-bookworm-slim AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci
+
+FROM node:20-bookworm-slim AS build
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run db:generate && npm run build
+
+FROM node:20-bookworm-slim AS run
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+COPY --from=build /app/data ./data
+RUN chown -R node:node /app/data
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]

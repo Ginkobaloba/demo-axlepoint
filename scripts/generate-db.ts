@@ -796,10 +796,13 @@ db.transaction(() => {
         .replace("{location}", assetSeed.location)
         .replace("{interval}", String(rng.pick([250, 500, 1000, 2000])));
 
+      // Closed orders skew recent and open orders spread wider so the
+      // trailing-30d vs prior-30d failure counts stay comparable; otherwise
+      // the MTBF trend KPI swings to implausible double-digit drops.
       const createdAt =
         status === "closed"
-          ? nowTs - rng.int(5, 150) * DAY - rng.int(0, 23) * HOUR
-          : nowTs - rng.int(0, 21) * DAY - rng.int(1, 23) * HOUR;
+          ? nowTs - rng.int(5, 75) * DAY - rng.int(0, 23) * HOUR
+          : nowTs - rng.int(0, 45) * DAY - rng.int(1, 23) * HOUR;
       const dueAt =
         status === "closed"
           ? createdAt + rng.int(7, 21) * DAY

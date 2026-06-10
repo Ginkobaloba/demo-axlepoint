@@ -36,7 +36,11 @@ export function computeRisk(activity: SensorActivity[]): {
       a.counts.severe * SEVERITY_WEIGHT.severe;
     // Sustained drift matters even between discrete anomaly hits.
     const trendBonus = Math.min(18, Math.max(0, (Math.abs(a.trendPct7d) - 4) * 1.5));
-    const contribution = Math.min(SENSOR_CAP, fromAnomalies + trendBonus);
+    // Soft saturation toward the per-sensor cap: one noisy channel cannot
+    // dominate, and distinct inputs keep distinct outputs (no tie pileups
+    // at the cap).
+    const contribution =
+      SENSOR_CAP * Math.tanh((fromAnomalies + trendBonus) / SENSOR_CAP);
     return {
       sensor: a.sensor,
       label: SENSOR_LABELS[a.sensor],
@@ -47,10 +51,11 @@ export function computeRisk(activity: SensorActivity[]): {
   });
 
   factors.sort((x, y) => y.contribution - x.contribution);
-  const score = Math.min(
-    100,
-    Math.round(factors.reduce((s, f) => s + f.contribution, 0)),
-  );
+  // Linear up to 70, then compressed toward an asymptote just under 98.
+  // A saturated 100 communicates less than a high distinct score.
+  const raw = factors.reduce((s, f) => s + f.contribution, 0);
+  const compressed = raw <= 70 ? raw : 70 + 28 * Math.tanh((raw - 70) / 30);
+  const score = Math.round(compressed);
   return { score, band: riskBand(score), factors };
 }
 
