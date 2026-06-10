@@ -3,25 +3,55 @@
 @tailwind utilities;
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #f7f5f0;
+  --foreground: #1a1a1a;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html {
+  scroll-behavior: smooth;
 }
 
 body {
   color: var(--foreground);
   background: var(--background);
-  font-family: Arial, Helvetica, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
-@layer utilities {
-  .text-balance {
-    text-wrap: balance;
+@layer components {
+  .card {
+    @apply rounded-lg border border-line bg-panel shadow-card;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-md text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-forest disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-forest text-cream hover:bg-forest-dark px-4 py-2;
+  }
+  .btn-secondary {
+    @apply btn border border-line bg-panel text-ink hover:bg-cream px-4 py-2;
+  }
+  .btn-gold {
+    @apply btn bg-gold text-ink hover:brightness-95 px-4 py-2;
+  }
+  .input {
+    @apply w-full rounded-md border border-line bg-panel px-3 py-2 text-sm text-ink placeholder:text-ink-faint focus:border-forest focus:outline-none focus:ring-1 focus:ring-forest;
+  }
+  .label {
+    @apply mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-soft;
+  }
+  .table-base {
+    @apply w-full text-left text-sm;
+  }
+  .table-base thead th {
+    @apply border-b border-line px-3 py-2 text-xs font-semibold uppercase tracking-wide text-ink-faint;
+  }
+  .table-base tbody td {
+    @apply border-b border-line/60 px-3 py-2.5 align-middle;
+  }
+  .table-base tbody tr:last-child td {
+    @apply border-b-0;
   }
 }
