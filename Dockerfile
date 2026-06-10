@@ -6,6 +6,10 @@
 
 FROM node:20-bookworm-slim AS deps
 WORKDIR /app
+# better-sqlite3 compiles from source via node-gyp on this base image.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 RUN npm ci
 

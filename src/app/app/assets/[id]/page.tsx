@@ -52,11 +52,16 @@ export default function AssetDetailPage({
   const asset = getAsset(params.id);
   if (!asset) notFound();
 
-  const sensors = getAssetSensors(asset.id);
-  const factors = (JSON.parse(asset.risk_factors) as RiskFactor[]).filter(
-    (f) => f.contribution > 0,
-  );
+  const availableSensors = getAssetSensors(asset.id);
+  const allFactors = JSON.parse(asset.risk_factors) as RiskFactor[];
+  const factors = allFactors.filter((f) => f.contribution > 0);
   const topFactor = factors[0] ?? null;
+  // Chart tabs in risk order: the default tab is the sensor driving the
+  // score, not whatever sorts first alphabetically.
+  const sensors = [
+    ...allFactors.map((f) => f.sensor).filter((s) => availableSensors.includes(s)),
+    ...availableSensors.filter((s) => !allFactors.some((f) => f.sensor === s)),
+  ];
   const now = getGeneratedAt();
   const recentAnomalies = getAssetAnomalies(asset.id, now - 7 * 86400);
   const workOrders = getAssetWorkOrders(asset.id);
@@ -128,6 +133,14 @@ export default function AssetDetailPage({
               />
             </div>
 
+            <div className="mt-4">
+              <RecommendActionButton
+                assetId={asset.id}
+                assetName={asset.name}
+                topFactor={topFactor}
+              />
+            </div>
+
             {/* Why is this score elevated? */}
             <details className="group mt-4" open={asset.risk_score >= 50}>
               <summary className="flex cursor-pointer list-none items-center justify-between rounded-md border border-line px-3 py-2 text-sm font-medium text-ink-soft hover:bg-cream">
@@ -180,14 +193,6 @@ export default function AssetDetailPage({
                 </p>
               </div>
             </details>
-
-            <div className="mt-4">
-              <RecommendActionButton
-                assetId={asset.id}
-                assetName={asset.name}
-                topFactor={topFactor}
-              />
-            </div>
           </div>
         </div>
 
