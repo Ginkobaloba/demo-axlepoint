@@ -35,12 +35,15 @@
 
 ## What is currently broken or incomplete
 
-- **paradigm-site publish of PR #31 may still be pending**: the container
-  CI for `dd75906` was in progress at session end. Once green: pull the
-  sha-tagged image and recreate the paradigm-site container on DREWSPC
-  (sha tag, not :latest; GHCR CDN served stale :latest on 06-10, see the
-  site relaunch handoff). If this session continued past CI, check the
-  status table in `DEMOS_RUNNING_HANDOFF.md` for the publish entry.
+- **paradigm-site /work IS published** (this section updated before
+  session end): PR #31 deploy surfaced an nginx regression (/work 301 to
+  /work/ then 403, caused by the nested case-study page's directory
+  shadowing work.html in try_files). Rolled back within ~3 minutes,
+  fixed in PR #32 (`e2d1f71`: resolve $uri.html before directory lookup,
+  never serve bare directories), redeployed from `sha-e2d1f71`, all
+  public routes verified 200 and gated routes still 404. Rollback image
+  retained as `paradigm-site:rollback-pre-pr31` on DREWSPC; safe to
+  delete once the fix has soaked.
 - **BROOKFIELD has no AxlePoint container** (host unreachable + ssh
   config perms block agent-side ssh: "Bad owner or permissions on
   C:\Users\Drama\.ssh\config" for the claude-remote user; needs icacls
