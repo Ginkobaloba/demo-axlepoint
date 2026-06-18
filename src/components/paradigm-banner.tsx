@@ -33,19 +33,19 @@ export function ParadigmBanner() {
   return (
     <div
       role="region"
-      aria-label="Paradigm demo attribution"
+      aria-label="Paradigm studio CTA"
       className="fixed inset-x-0 bottom-0 z-50 flex h-8 items-center justify-center gap-2 border-t border-line bg-cream text-forest"
       style={{ boxShadow: "0 -2px 8px rgba(26, 26, 26, 0.08)" }}
     >
       <p className="truncate text-[13px] font-medium">
-        This demo was built by{" "}
+        Built by Paradigm Coding Solutions. Want one like it for your data?{" "}
         <a
-          href="https://projectnexuscode.org"
+          href="https://projectnexuscode.org/contact"
           target="_blank"
           rel="noopener noreferrer"
-          className="font-semibold underline-offset-2 hover:underline"
+          className="font-semibold underline underline-offset-2 hover:no-underline"
         >
-          Paradigm
+          Talk to us
         </a>
       </p>
       <button
