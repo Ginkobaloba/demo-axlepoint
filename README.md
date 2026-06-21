@@ -44,6 +44,52 @@ docker run -p 8102:3000 demo-axlepoint
 - `src/app/app/**` - the authenticated demo application
 - `docs/demos/axlepoint/decisions.md` - design decision log
 
+## Authentication
+
+AxlePoint supports two parallel sign-in paths. Both land on the same
+authenticated `/app` surface; the difference is who vouches for the user.
+
+1. **Demo cookie (no portal involved).** The "Sign in as demo user" button
+   on the marketing page POSTs to `/api/session`, which sets the
+   `axle_demo_session=demo-user` cookie. This is the legacy
+   no-credentials path, intended for portfolio browsing. It still works.
+2. **Paradigm Portal handoff.** The Paradigm Portal mints a 60-minute
+   RS256 JWT, redirects the user to AxlePoint with the token in the URL
+   fragment (`#portal_token=<JWT>`), and a client-side claim component
+   scrubs the fragment, POSTs the token to `/api/auth/portal-handoff`, and
+   navigates to `/app` on success. The handoff route verifies the token
+   against the portal's JWKS (cached locally, 1h fresh + 10m
+   stale-while-revalidate per the portal contract) and sets the
+   `axle_portal_session` cookie (HS256, 8h TTL).
+
+The middleware accepts either cookie at the edge. The portal path is the
+real authenticated session; the demo path stays available so demo-day
+bookmarks keep working until every public touchpoint flows through the
+portal.
+
+Required env for the portal path (defaults shown in `.env.example`):
+
+- `PORTAL_JWKS_URL`
+- `PORTAL_EXPECTED_ISSUER`
+- `PORTAL_EXPECTED_AUD`
+- `AXLE_PORTAL_SESSION_SECRET` (32+ chars, required in deployed envs)
+
+The contract this app implements is in
+`portal-shell/docs/PORTAL_GATE_CONTRACT.md`.
+
+## Tests
+
+```powershell
+npm test
+```
+
+Vitest covers `verifyPortalToken` (15 unit tests, including rotation
+grace and stale-while-revalidate semantics) and the
+`/api/auth/portal-handoff` route (8 integration tests, including the
+503 path when the portal's JWKS endpoint is unreachable or
+rate-limiting). No real network calls; an in-memory fake JWKS serves
+keys generated per-test.
+
 ## The ML story
 
 The demo's detector is a rolling statistical model (EWMA mean and variance

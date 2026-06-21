@@ -10,6 +10,7 @@ import {
   TrendingDown,
 } from "lucide-react";
 import { Wordmark } from "@/components/brand";
+import { PortalHandoffClaim } from "@/components/portal-handoff-claim";
 
 export const dynamic = "force-static";
 
@@ -83,6 +84,10 @@ const SECONDARY = [
 export default function MarketingPage() {
   return (
     <div className="min-h-screen bg-cream pb-12 text-ink">
+      {/* Portal handoff claim. Renders nothing unless arriving with a
+          #portal_token fragment from the Paradigm Portal. */}
+      <PortalHandoffClaim />
+
       {/* Top bar */}
       <header className="sticky top-0 z-40 border-b border-line bg-cream/95 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4 sm:px-6">

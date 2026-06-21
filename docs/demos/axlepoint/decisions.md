@@ -74,3 +74,39 @@ JSX. AxlePoint ships a TypeScript port that follows the documented contract
 exactly (32px, #1f5a44 on #f7f5f0, pn_banner_dismissed 7-day cookie,
 role="region", labeled dismiss) and restyles with the project's Tailwind
 tokens. If the contract changes, port the change and redeploy.
+
+## D-010: Federate to Paradigm Portal via JWKS, keep demo cookie alive
+
+Chunk 4b. AxlePoint now accepts two parallel authenticated paths:
+
+1. The legacy `axle_demo_session=demo-user` cookie set by POST /api/session.
+2. A new `axle_portal_session` cookie minted by /api/auth/portal-handoff
+   after verifying a Paradigm Portal RS256 JWT against the portal's JWKS.
+
+The middleware accepts either. The demo path stays so existing bookmarks
+keep working; the portal path is the real authenticated session and the
+only one a user reaches when they click the AxlePoint tile on the portal.
+
+Verification follows `portal-shell/docs/PORTAL_GATE_CONTRACT.md`:
+
+- JWKS fetched on first call, cached per the response's Cache-Control
+  (1h fresh + 10m stale-while-revalidate per the contract defaults).
+- Token signature checked against the kid-matching JWK first, then any
+  remaining JWK so a token minted right before a portal key rotation
+  still verifies.
+- Strict iss + aud equality. axlepoint accepts only
+  `aud=axlepoint` from issuer `https://portal.projectnexuscode.org`.
+- Typed errors (BadSignature, Expired, IssuedInFuture, WrongAudience,
+  WrongIssuer, UnknownKid, MalformedToken, JwksFetchError) so the
+  handoff route's HTTP mapping is precise: 401 for token failures,
+  503 when the portal's JWKS endpoint itself is down or rate-limiting.
+
+The app-side session cookie is HS256 signed with
+`AXLE_PORTAL_SESSION_SECRET` (env, 32+ chars required in deployed
+envs) carrying sub + customer_id + role, 8h TTL. Reading the cookie
+goes through `readPortalSession` so the verification path is a
+single function call.
+
+Tier 2 additive: no existing behavior changes. Shipping is safe even
+if the portal subdomain is mid-deploy because the JWKS fetch is
+lazy-on-first-handoff and the demo cookie path is unaffected.
