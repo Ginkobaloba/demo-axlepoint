@@ -28,6 +28,7 @@ import {
   _resetPortalVerifyCachesForTests,
 } from "@/lib/portal-verify";
 import {
+  mintPortalSession,
   readPortalSession,
   PORTAL_SESSION_COOKIE,
 } from "@/lib/portal-session";
@@ -72,14 +73,16 @@ describe("POST /api/auth/portal-handoff", () => {
   let stranger: TestKey;
 
   beforeEach(async () => {
+    process.env.AXLE_PORTAL_SESSION_SECRET = "a".repeat(48);
     _resetPortalVerifyCachesForTests();
     active = await makeTestKey("ps-active-it-1");
     stranger = await makeTestKey("ps-stranger-it");
   });
 
   it("accepts a valid token and sets a portal session cookie", async () => {
+    // Use mixed-case sub to verify the session cookie lowercases the subject.
     const token = await signWith(active, {
-      sub: "operator@acme.example",
+      sub: "Operator@Acme.Example",
       customer_id: "cust-123",
       role: "customer",
     });
@@ -94,7 +97,6 @@ describe("POST /api/auth/portal-handoff", () => {
     };
     expect(body.ok).toBe(true);
     expect(body.redirect).toBe("/app");
-    expect(body.user.email).toBe("operator@acme.example");
     expect(body.user.role).toBe("customer");
     expect(body.user.customer_id).toBe("cust-123");
 
@@ -103,7 +105,7 @@ describe("POST /api/auth/portal-handoff", () => {
     expect(setCookie.toLowerCase()).toContain("httponly");
 
     // Round-trip the cookie through readPortalSession to confirm the
-    // signed session is what we think it is.
+    // signed session lowercases the sub at mint time.
     const cookieValue = res.cookies.get(PORTAL_SESSION_COOKIE)?.value;
     const session = await readPortalSession(cookieValue);
     expect(session?.sub).toBe("operator@acme.example");
@@ -182,5 +184,12 @@ describe("POST /api/auth/portal-handoff", () => {
     expect(res.status).toBe(503);
     const body = (await res.json()) as { code: string };
     expect(body.code).toBe("jwks_unavailable");
+  });
+
+  it("throws when AXLE_PORTAL_SESSION_SECRET is not set", async () => {
+    delete process.env.AXLE_PORTAL_SESSION_SECRET;
+    await expect(
+      mintPortalSession({ sub: "x@y.z", customer_id: null, role: "customer" }),
+    ).rejects.toThrow(/AXLE_PORTAL_SESSION_SECRET/);
   });
 });

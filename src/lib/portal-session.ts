@@ -29,16 +29,15 @@ export interface PortalSessionClaims {
   role: "customer" | "staff" | "internal";
 }
 
+// Dev-secret fallback removed deliberately as part of Harbor-pattern
+// standardization (chunk 4b follow-up). Every deployed environment
+// (including local dev) must wire AXLE_PORTAL_SESSION_SECRET explicitly.
+// See demo-harborbistro src/lib/portal-session.ts for the canonical pattern.
 function getSecret(): Uint8Array {
-  const raw =
-    process.env.AXLE_PORTAL_SESSION_SECRET ??
-    // Dev-only fallback so `npm run dev` works without env wiring. In any
-    // deployed environment AXLE_PORTAL_SESSION_SECRET must be set; the
-    // README documents this.
-    "dev-axlepoint-portal-session-secret-do-not-use-in-prod";
-  if (raw.length < 32) {
+  const raw = process.env.AXLE_PORTAL_SESSION_SECRET;
+  if (!raw || raw.length < 32) {
     throw new Error(
-      "AXLE_PORTAL_SESSION_SECRET must be at least 32 characters",
+      "AXLE_PORTAL_SESSION_SECRET must be set to a value of at least 32 characters",
     );
   }
   return new TextEncoder().encode(raw);
@@ -55,7 +54,7 @@ export async function mintPortalSession(
   })
     .setProtectedHeader({ alg: HS256_ALG, typ: "JWT" })
     .setIssuedAt(now)
-    .setSubject(claims.sub)
+    .setSubject(claims.sub.toLowerCase())
     .setExpirationTime(exp)
     .sign(getSecret());
   return { value, maxAgeSeconds: SESSION_TTL_SECONDS };
