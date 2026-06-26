@@ -1,0 +1,59 @@
+# smoke.yml -- fast surface checks run on every PR
+#
+# Supported assertion types:
+#   http_status       -- checks HTTP response code matches `expect`
+#   text_present      -- checks that `text` appears in the response body
+#   selector_present  -- checks that a CSS selector matches at least one element
+#   header_present    -- checks that the named response header exists
+#   redirects_to      -- checks that the URL redirects to `expect` (final URL)
+#   json_path_equals  -- checks that a JSONPath expression equals `expect`
+
+target: demo-axlepoint
+deploy_url: https://axlepoint.projectnexuscode.org
+
+surfaces:
+  - name: home
+    url: /
+    assertions:
+      - { type: http_status, expect: 200 }
+      - { type: text_present, text: "Asset health and maintenance operations for" }
+      - { type: text_present, text: "AxlePoint" }
+      - { type: text_present, text: "Open the live demo" }
+      - { type: header_present, header: "Strict-Transport-Security" }
+      - { type: selector_present, selector: "form[action='/api/session']" }
+
+  - name: dashboard
+    url: /app
+    assertions:
+      - { type: http_status, expect: 200 }
+      - { type: text_present, text: "Operations dashboard" }
+      - { type: text_present, text: "Fleet risk distribution" }
+      - { type: text_present, text: "Recent anomalies" }
+      - { type: header_present, header: "Strict-Transport-Security" }
+
+  - name: assets
+    url: /app/assets
+    assertions:
+      - { type: http_status, expect: 200 }
+      - { type: text_present, text: "Assets" }
+      - { type: text_present, text: "under monitoring" }
+      - { type: header_present, header: "Strict-Transport-Security" }
+
+  - name: work-orders
+    url: /app/work-orders
+    assertions:
+      - { type: http_status, expect: 200 }
+      - { type: text_present, text: "Work orders" }
+      - { type: text_present, text: "New work order" }
+      - { type: header_present, header: "Strict-Transport-Security" }
+
+  - name: session-signin
+    url: /api/session
+    assertions:
+      - { type: http_status, expect: 303 }
+
+  - name: unauthenticated-redirect
+    url: /app
+    assertions:
+      # Without a session cookie the middleware must redirect to /?signin=required
+      - { type: redirects_to, expect: "/?signin=required" }

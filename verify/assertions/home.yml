@@ -1,0 +1,52 @@
+# assertions/home.yml -- full assertion set for the home (marketing) surface
+#
+# Runs during deep verify (/verify deep). Richer than the smoke.yml entry.
+# Browser-dependent assertions (selector_present, no_console_errors, lcp_under_ms,
+# axe_no_critical) require a headless or headed browser run; they are skipped
+# in the fast CI smoke pass.
+
+surface: home
+url: /
+
+assertions:
+  - { type: http_status, expect: 200 }
+
+  # Core copy -- hero headline and key value proposition
+  - { type: text_present, text: "Asset health and maintenance operations for" }
+  - { type: text_present, text: "heavy industry" }
+  - { type: text_present, text: "AxlePoint watches every engine, generator, compressor, and pump" }
+  - { type: text_present, text: "scores failure risk before it becomes failure" }
+
+  # Stats strip -- if these numbers ever change the test catches it
+  - { type: text_present, text: "12,400+" }
+  - { type: text_present, text: "31%" }
+  - { type: text_present, text: "98.2%" }
+
+  # Features section
+  - { type: text_present, text: "Predictive failure risk scoring" }
+  - { type: text_present, text: "Work orders that close the loop" }
+  - { type: text_present, text: "Parts and compliance readiness" }
+
+  # Footer disclaimer -- confirms synthetic-data statement is present
+  - { type: text_present, text: "AxlePoint Industrial is a fictional product demo" }
+  - { type: text_present, text: "All data is synthetic" }
+
+  # Security header
+  - { type: header_present, header: "Strict-Transport-Security" }
+
+  # DOM structure -- sign-in form must post to /api/session
+  - { type: selector_present, selector: "form[action='/api/session']" }
+  - { type: selector_present, selector: "button[type='submit']" }
+
+  # Nav sections exist
+  - { type: selector_present, selector: "a[href='#platform']" }
+  - { type: selector_present, selector: "a[href='#capabilities']" }
+  - { type: selector_present, selector: "a[href='#results']" }
+
+  # Paradigm banner (injected by CF Workers; present on the live origin)
+  - { type: selector_present, selector: "#paradigm-banner" }
+
+  # Performance and accessibility (deep/headed only)
+  - { type: no_console_errors }
+  - { type: lcp_under_ms, expect: 2500 }
+  - { type: axe_no_critical }
