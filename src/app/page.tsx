@@ -188,6 +188,10 @@ export default function MarketingPage() {
             </div>
           ))}
         </div>
+        <p className="mx-auto max-w-6xl px-4 pb-8 text-center text-xs text-cream/55 sm:px-6">
+          Representative results across customer pilots. All data shown in this
+          environment is synthetic.
+        </p>
       </section>
 
       {/* Feature blocks */}
