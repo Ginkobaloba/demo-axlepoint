@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { completionForStatus } from "./wo-actions";
 import type {
   Anomaly,
   Asset,
@@ -8,6 +9,7 @@ import type {
   Technician,
   WorkOrder,
   WorkOrderPriority,
+  WorkOrderStatus,
   WorkOrderType,
 } from "./types";
 
@@ -304,6 +306,81 @@ export function createWorkOrder(input: NewWorkOrder): string {
     return id;
   });
   return tx();
+}
+
+// ------------------------------------------------- work-order mutations
+
+function nowSec(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+export function assignWorkOrder(id: string, technicianId: string | null): void {
+  getDb()
+    .prepare("UPDATE work_orders SET assigned_to = ? WHERE id = ?")
+    .run(technicianId, id);
+}
+
+export function setWorkOrderStatus(id: string, status: WorkOrderStatus): void {
+  const db = getDb();
+  const row = db
+    .prepare("SELECT completed_at FROM work_orders WHERE id = ?")
+    .get(id) as { completed_at: number | null } | undefined;
+  const completedAt = completionForStatus(
+    status,
+    nowSec(),
+    row?.completed_at ?? null,
+  );
+  db.prepare(
+    "UPDATE work_orders SET status = ?, completed_at = ? WHERE id = ?",
+  ).run(status, completedAt, id);
+}
+
+export function setWorkOrderDueDate(id: string, dueAt: number | null): void {
+  getDb()
+    .prepare("UPDATE work_orders SET due_at = ? WHERE id = ?")
+    .run(dueAt, id);
+}
+
+/**
+ * Attach a part to a work order. If the part is already on the order the
+ * quantity is replaced (not stacked), so repeated adds are idempotent.
+ */
+export function addWorkOrderPart(
+  workOrderId: string,
+  partId: string,
+  qty: number,
+): void {
+  const db = getDb();
+  db.transaction(() => {
+    const existing = db
+      .prepare(
+        "SELECT 1 FROM work_order_parts WHERE work_order_id = ? AND part_id = ?",
+      )
+      .get(workOrderId, partId);
+    if (existing) {
+      db.prepare(
+        "UPDATE work_order_parts SET qty = ? WHERE work_order_id = ? AND part_id = ?",
+      ).run(qty, workOrderId, partId);
+    } else {
+      db.prepare(
+        "INSERT INTO work_order_parts (work_order_id, part_id, qty) VALUES (?, ?, ?)",
+      ).run(workOrderId, partId, qty);
+    }
+  })();
+}
+
+export function removeWorkOrderPart(workOrderId: string, partId: string): void {
+  getDb()
+    .prepare(
+      "DELETE FROM work_order_parts WHERE work_order_id = ? AND part_id = ?",
+    )
+    .run(workOrderId, partId);
+}
+
+export function getPart(id: string): Part | undefined {
+  return getDb().prepare("SELECT * FROM parts WHERE id = ?").get(id) as
+    | Part
+    | undefined;
 }
 
 // ------------------------------------------------------------------ schedule

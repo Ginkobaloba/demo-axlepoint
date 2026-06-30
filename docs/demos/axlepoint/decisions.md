@@ -123,3 +123,30 @@ JSON callers and a relative redirect back to the form (with the reason) for
 form posts. The clean seed plus this guard means a redeploy clears the
 existing junk and nothing of that shape can re-accumulate. Note: the junk was
 runtime-only state, not a seed defect, so no generator change was needed.
+
+## D-007: Work orders are writable end-to-end (closed loop)
+
+The headline workflow drafts a predictive work order via "Recommend
+Preventive Action", but the drafted order was a dead end -- no way to assign,
+schedule, or action it. The detail page now PATCHes /api/work-orders/[id] to
+move status, assign a technician, set a due date, and attach/detach parts.
+Pure validation and the status->completed_at rule live in src/lib/wo-actions.ts
+(unit-tested); the SQLite writes live in queries.ts; the editable UI is two
+client components (work-order-controls, work-order-parts-editor) that refresh
+the server-rendered detail after each change. Closing an order stamps
+completed_at; reopening clears it. Attaching a part does NOT decrement
+inventory stock -- consumption against on-hand is owned by the reorder/PO flow
+so the two paths never double-count. Writes are container-local and reset on
+redeploy, same contract as createWorkOrder (D-005).
+
+## D-008: portal-handoff handler extracted out of the route file
+
+The portal-handoff route exported a makeHandler factory (so tests could inject
+a stub VerifierConfig). Next.js 14 App Router route modules may only export
+HTTP method handlers plus a fixed config set, so that export failed the
+production build's generated route-type check -- one of the pre-existing
+"auth-chunk" breakers that left main unable to `next build`. The factory moved
+to src/lib/portal-handoff-handler.ts; route.ts now exports only POST. Behavior
+is unchanged and the existing integration tests pass against the moved module.
+A second breaker (an unused UnknownKid import in portal-verify.test.ts) was
+also removed. With both gone, main builds clean and the demo is redeployable.

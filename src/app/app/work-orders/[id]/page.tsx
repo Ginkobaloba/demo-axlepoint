@@ -1,14 +1,19 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { format } from "date-fns";
 import { ArrowLeft, CheckCircle2 } from "lucide-react";
 import {
   PriorityChip,
   WoStatusChip,
   WoTypeChip,
 } from "@/components/badges";
-import { fmtDate, fmtMoney } from "@/lib/format";
+import { WorkOrderControls } from "@/components/work-order-controls";
+import { WorkOrderPartsEditor } from "@/components/work-order-parts-editor";
+import { fmtDate } from "@/lib/format";
 import {
   getAsset,
+  getParts,
+  getTechnicians,
   getWorkOrder,
   getWorkOrderParts,
 } from "@/lib/queries";
@@ -26,7 +31,11 @@ export default function WorkOrderDetailPage({
   if (!wo) notFound();
   const parts = getWorkOrderParts(wo.id);
   const asset = getAsset(wo.asset_id);
-  const partsTotal = parts.reduce((s, p) => s + p.unit_cost * p.qty, 0);
+  const technicians = getTechnicians();
+  const catalog = getParts();
+  const dueDateIso = wo.due_at
+    ? format(new Date(wo.due_at * 1000), "yyyy-MM-dd")
+    : null;
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
@@ -41,8 +50,8 @@ export default function WorkOrderDetailPage({
       {searchParams.created && (
         <div className="flex items-center gap-2 rounded-md border border-risk-low/30 bg-risk-low/10 px-4 py-3 text-sm font-medium text-risk-low">
           <CheckCircle2 className="h-4 w-4" />
-          Work order drafted. Review the details below, then assign and
-          schedule it.
+          Work order drafted. Assign a technician, set a due date, attach parts,
+          and move it to In progress below.
         </div>
       )}
 
@@ -100,46 +109,34 @@ export default function WorkOrderDetailPage({
             {wo.description}
           </p>
         </div>
+      </div>
 
-        {parts.length > 0 && (
-          <div className="border-t border-line px-5 py-4">
-            <p className="label">Parts on this order</p>
-            <table className="table-base mt-1">
-              <thead>
-                <tr>
-                  <th>Part</th>
-                  <th>SKU</th>
-                  <th className="text-right">Qty</th>
-                  <th className="text-right">Lead time</th>
-                  <th className="text-right">Ext. cost</th>
-                </tr>
-              </thead>
-              <tbody>
-                {parts.map((p) => (
-                  <tr key={p.id}>
-                    <td className="text-ink">{p.name}</td>
-                    <td className="font-mono text-xs text-ink-soft">{p.sku}</td>
-                    <td className="text-right font-mono">{p.qty}</td>
-                    <td className="text-right text-ink-soft">
-                      {p.lead_time_days}d
-                    </td>
-                    <td className="text-right font-mono">
-                      {fmtMoney(p.unit_cost * p.qty)}
-                    </td>
-                  </tr>
-                ))}
-                <tr>
-                  <td colSpan={4} className="text-right text-xs font-semibold uppercase tracking-wide text-ink-faint">
-                    Total
-                  </td>
-                  <td className="text-right font-mono font-semibold">
-                    {fmtMoney(partsTotal)}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        )}
+      <div className="card">
+        <div className="border-b border-line px-5 py-3">
+          <h2 className="text-sm font-semibold">Manage work order</h2>
+        </div>
+        <div className="px-5 py-4">
+          <WorkOrderControls
+            workOrderId={wo.id}
+            status={wo.status}
+            assignedTo={wo.assigned_to}
+            dueDate={dueDateIso}
+            technicians={technicians}
+          />
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="border-b border-line px-5 py-3">
+          <h2 className="text-sm font-semibold">Parts</h2>
+        </div>
+        <div className="px-5 py-4">
+          <WorkOrderPartsEditor
+            workOrderId={wo.id}
+            parts={parts}
+            catalog={catalog}
+          />
+        </div>
       </div>
     </div>
   );
