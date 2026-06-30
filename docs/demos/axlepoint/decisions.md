@@ -183,3 +183,17 @@ page (/app/parts/[id]) lists the work orders consuming it and the POs that
 include it; work orders already showed their parts. Verified end-to-end:
 create reorder -> 5 low parts became 3 supplier POs -> receive one -> the 3
 restocked parts dropped off the below-reorder list.
+
+## D-011: Schedule is interactive (views + drag-to-reschedule)
+
+The PM calendar was a read-only month grid. It is now a client board
+(schedule-board.tsx) with four views -- Month, Week, Day, and By technician --
+and prev/next/today navigation. Tasks are draggable: dropping a task on a
+different day PATCHes /api/schedule/[id] with the new next_due and optimistically
+moves the chip (reverting on failure). The By-technician view aggregates load
+(task count + labor hours, sorted, Unassigned last) via the pure, unit-tested
+technicianLoad helper; date validation (rejecting overflow dates like 02-30) is
+the unit-tested isValidIsoDate in src/lib/schedule-view.ts. HTML5 drag-and-drop
+is used directly (no dnd library) to keep the bundle small. Verified
+in-browser: all four views render; a synthetic drag moved a task to a new day
+and persisted; the API rejects bad dates (422) and unknown tasks (404).

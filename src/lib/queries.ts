@@ -401,6 +401,19 @@ export function getSchedule(): ScheduleEntry[] {
     .all() as ScheduleEntry[];
 }
 
+export function getMaintenanceTask(id: string): MaintenanceTask | undefined {
+  return getDb()
+    .prepare("SELECT * FROM maintenance_schedule WHERE id = ?")
+    .get(id) as MaintenanceTask | undefined;
+}
+
+/** Reschedule a preventive task to a new due date (YYYY-MM-DD). */
+export function rescheduleTask(id: string, nextDue: string): void {
+  getDb()
+    .prepare("UPDATE maintenance_schedule SET next_due = ? WHERE id = ?")
+    .run(nextDue, id);
+}
+
 export function getAssetSchedule(assetId: string): ScheduleEntry[] {
   return getDb()
     .prepare(
