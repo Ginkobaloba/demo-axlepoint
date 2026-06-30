@@ -65,8 +65,9 @@ export default function ReportsPage() {
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Reports</h1>
         <p className="mt-1 text-sm text-ink-soft">
-          Canned operational reports over the demo dataset. Production
-          deployments add scheduled exports and per-site drill-downs.
+          Operational reporting across your maintenance program, from work-order
+          throughput to parts spend and fleet risk posture. Scheduled exports and
+          per-site drill-downs come with production deployments.
         </p>
       </div>
 
