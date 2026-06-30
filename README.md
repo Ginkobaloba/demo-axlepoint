@@ -90,6 +90,74 @@ grace and stale-while-revalidate semantics) and the
 rate-limiting). No real network calls; an in-memory fake JWKS serves
 keys generated per-test.
 
+## Verification
+
+The `verify/` directory holds the Paradigm Verify suite for this repo. It covers
+the marketing page, the authenticated app surfaces, and the session/auth layer
+(tier 3 -- see `verify/tier_map.yml`).
+
+### Quick smoke (every PR)
+
+`verify/smoke.yml` declares the fast surface checks that CI runs on every pull
+request via `.github/workflows/verify.yml`. To run locally:
+
+```powershell
+bash verify/ci/quick_smoke.sh verify/smoke.yml
+```
+
+This curls every surface in `smoke.yml` and asserts `http_status`,
+`header_present`, and `text_present`. Browser-only assertions
+(`selector_present`, `no_console_errors`, etc.) are skipped in the fast pass
+and covered by the deep run.
+
+### Deep verify (tier-3 PRs)
+
+Any PR that touches `middleware.ts`, `src/app/api/session/`,
+`src/app/api/auth/portal-handoff/`, or `src/lib/portal-session.ts` must carry
+the `tier-3` label. CI then requires a committed `verify/reports/` entry that
+records `Overall: PASS` before the PR can merge. Run the local deep pass first:
+
+```powershell
+# from the /verify skill inside Claude Code
+/verify deep C:\dev\demo-axlepoint
+```
+
+Or drive it directly:
+
+```powershell
+bash verify/ci/deep_gate.sh
+```
+
+The deep pass runs all assertions in `verify/assertions/*.yml`, including
+`no_console_errors`, `lcp_under_ms`, and `axe_no_critical` (headless), plus
+layers 5-6 (headed Chrome via Windows MCP) when run locally.
+
+### CI workflow
+
+`.github/workflows/verify.yml` runs two jobs:
+
+- `quick-verify` -- runs on every PR; executes `verify/ci/quick_smoke.sh`
+- `deep-verify` -- runs only on PRs labeled `tier-3`; runs after
+  `quick-verify` and enforces the committed report gate via
+  `verify/ci/deep_gate.sh`
+
+To block merges on a failing deep-verify, add `"deep-verify"` as a required
+status check in the branch protection rule for `main`.
+
+### Surface inventory
+
+| Surface | Route | Tier |
+|---|---|---|
+| home | / | 1 |
+| dashboard | /app | 1 |
+| assets | /app/assets | 1 |
+| work-orders | /app/work-orders | 2 |
+| session-signin | POST /api/session | 3 |
+| portal-handoff | POST /api/auth/portal-handoff | 3 |
+| unauthenticated-redirect | /app (no cookie) | 3 |
+
+---
+
 ## The ML story
 
 The demo's detector is a rolling statistical model (EWMA mean and variance

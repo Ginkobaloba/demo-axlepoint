@@ -1,0 +1,77 @@
+# tier_map.yml -- surface risk classification
+#
+# Surfaces listed at tier 3 force a deep-verify pass before a PR touching
+# them can merge. Tier 1 surfaces are low-risk and do not block merges.
+#
+# Tiers:
+#   1 -- informational / low stakes; smoke-only is sufficient
+#   2 -- moderate stakes; smoke required, deep recommended
+#   3 -- high stakes; deep-verify REQUIRED before merge
+
+surfaces:
+  - name: session-signin
+    tier: 3
+    deep_verify_before_merge: true
+    reason: >
+      POST /api/session sets the axle_demo_session httpOnly cookie that gates
+      the entire /app surface. Cookie attributes (httpOnly, sameSite, maxAge,
+      path), redirect correctness (relative Location to avoid proxy address
+      leakage), and the signout path all live here. A regression silently
+      breaks every demo-day bookmark.
+
+  - name: portal-handoff
+    tier: 3
+    deep_verify_before_merge: true
+    reason: >
+      POST /api/auth/portal-handoff verifies a Paradigm Portal RS256 JWT
+      against a remote JWKS and sets the axle_portal_session cookie. Token
+      verification logic, JWKS cache/SWR semantics, cookie security flags
+      (secure in prod), and the 400/401/503 error taxonomy are all
+      high-consequence. A bad deploy here breaks portal-launched sessions
+      silently -- the user lands on the marketing page with no explanation.
+
+  - name: unauthenticated-redirect
+    tier: 3
+    deep_verify_before_merge: true
+    reason: >
+      The Next.js middleware is the only thing standing between an anonymous
+      request and the authenticated /app surface. It checks for either
+      axle_demo_session OR axle_portal_session and redirects on miss. Any
+      regression here either leaks the app to unauthenticated users (security
+      regression) or breaks both sign-in paths at once (availability
+      regression). Recently changed on the standardize-session-cookie branch,
+      so it is actively in motion.
+
+  - name: work-orders
+    tier: 2
+    deep_verify_before_merge: false
+    reason: >
+      Work-order list and detail pages are data reads only -- no writes from
+      the list view. The "New work order" form (POST /api/work-orders) is the
+      only write surface and is covered by its own assertions. List page is
+      moderate risk: a broken query crashes the route, but no data is mutated.
+
+  - name: dashboard
+    tier: 1
+    deep_verify_before_merge: false
+    reason: >
+      The operations dashboard is a read-only SSR page backed by SQLite queries
+      against a build-time-generated database. No user input, no writes, no
+      session mutation. A broken query returns a 500 (caught by smoke http_status
+      check). Lowest-stakes surface in the app.
+
+  - name: assets
+    tier: 1
+    deep_verify_before_merge: false
+    reason: >
+      Asset list and detail pages are read-only. Filter parameters are passed as
+      GET query strings with no persistence. SQLite is build-time, immutable at
+      runtime. A broken filter returns an empty table, not a data loss.
+
+  - name: home
+    tier: 1
+    deep_verify_before_merge: false
+    reason: >
+      Static marketing page (force-static in Next.js). No user state, no
+      cookies set, no server queries. The most a regression can do is show
+      broken copy or a missing button.

@@ -1,0 +1,72 @@
+# assertions/session.yml -- full assertion set for the session / auth surfaces
+#
+# Covers three related surfaces:
+#   1. POST /api/session       -- demo-user cookie sign-in path
+#   2. POST /api/auth/portal-handoff -- Paradigm Portal JWT handoff path
+#   3. Middleware redirect     -- unauthenticated /app access must redirect
+#
+# These surfaces are all tier 3 (see verify/tier_map.yml). This file runs
+# during deep verify before any PR that touches middleware.ts, src/app/api/session/,
+# src/app/api/auth/portal-handoff/, or src/lib/portal-session.ts can merge.
+#
+# The headed / local-deep assertions (no_console_errors, axe_no_critical) apply
+# to the marketing page sign-in flow as the closest observable browser surface;
+# the API routes themselves are not browser pages.
+
+# --- Surface 1: demo session cookie sign-in ---
+surface: session-signin
+url: /api/session
+
+assertions:
+  # POST with no body signs in and issues a 303 redirect to /app
+  - { type: http_status, expect: 303 }
+
+  # The Location header must be relative (not absolute) so reverse-proxy
+  # origin rewriting does not produce a dead 0.0.0.0:3000 target.
+  # "redirects_to" follows the chain; final destination should be /app.
+  - { type: redirects_to, expect: "/app" }
+
+  # The session cookie must be set on the response
+  # (cookie name: axle_demo_session)
+  - { type: header_present, header: "Set-Cookie" }
+
+---
+# --- Surface 2: portal handoff route -- error path only (no real JWT in CI) ---
+surface: portal-handoff
+url: /api/auth/portal-handoff
+
+assertions:
+  # GET is not a supported method -- expect 405 or 404 (Next.js returns 405
+  # for a route that exports POST only when called with GET)
+  - { type: http_status, expect: 405 }
+
+  # POST with a missing body must return 400 with the bad_request code
+  # (tested via curl -X POST with empty body in the deep-run script)
+  # Smoke assertion: the route must exist and respond (not 404)
+  # This GET probe confirms the route is deployed and reachable.
+
+---
+# --- Surface 3: unauthenticated /app redirect ---
+surface: unauthenticated-redirect
+url: /app
+
+assertions:
+  # Middleware must redirect to /?signin=required when no session cookie is present
+  - { type: redirects_to, expect: "/?signin=required" }
+
+  # The redirect must not expose internal URLs (e.g. 0.0.0.0:3000)
+  # This is a prose reminder for the human deep-verify reviewer:
+  # check that Location: header in the 307/302 is a relative or
+  # public-host absolute URL, not the container bind address.
+  - { type: http_status, expect: 307 }
+
+  # After redirect, the landing page must render the sign-in button
+  - { type: text_present, text: "Sign in as demo user" }
+  - { type: selector_present, selector: "form[action='/api/session']" }
+
+  # Security header must be present even on the redirect destination
+  - { type: header_present, header: "Strict-Transport-Security" }
+
+  # Deep/headed checks on the sign-in page itself
+  - { type: no_console_errors }
+  - { type: axe_no_critical }
