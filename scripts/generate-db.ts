@@ -363,7 +363,10 @@ CREATE TABLE purchase_order_lines (
   po_id TEXT NOT NULL,
   part_id TEXT NOT NULL,
   qty INTEGER NOT NULL,
-  unit_cost REAL NOT NULL
+  unit_cost REAL NOT NULL,
+  -- One line per part per PO. The reorder total and the receive-restock both
+  -- assume this; the constraint enforces it rather than trusting convention.
+  UNIQUE (po_id, part_id)
 );
 CREATE INDEX idx_po_lines ON purchase_order_lines(po_id);
 `);
