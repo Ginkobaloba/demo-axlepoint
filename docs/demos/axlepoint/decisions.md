@@ -150,3 +150,17 @@ to src/lib/portal-handoff-handler.ts; route.ts now exports only POST. Behavior
 is unchanged and the existing integration tests pass against the moved module.
 A second breaker (an unused UnknownKid import in portal-verify.test.ts) was
 also removed. With both gone, main builds clean and the demo is redeployable.
+
+## D-009: Big tables are client-side searchable/sortable/filterable
+
+Work Orders (150+ rows) and Parts (80 SKUs) were read-only server tables with
+no search, sort, or filtering. Both now render through client components
+(work-orders-table, parts-table) that take the full row set from the server
+page and filter/sort in memory -- no round-trips, instant interaction, and the
+data sets are small enough that client-side is the simpler, faster choice than
+server query params. Sorting is a shared pure utility (src/lib/table-sort.ts,
+unit-tested): numeric-aware string compare, nulls always last, stable order,
+non-mutating. The SortableTh header component is shared too. Work Orders gets
+search (id/title/asset/tech), status tabs, and type/priority filters; Parts
+gets search (name/sku/category/supplier), category, and stock-status filters.
+A "Showing N of M" line keeps the active filter honest.

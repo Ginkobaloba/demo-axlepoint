@@ -1,5 +1,5 @@
-import { AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/cn";
+import { PartsTable } from "@/components/parts-table";
 import { fmtMoney, fmtNumber } from "@/lib/format";
 import { getParts } from "@/lib/queries";
 
@@ -51,70 +51,7 @@ export default function PartsPage() {
         ))}
       </div>
 
-      <div className="card overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="table-base">
-            <thead>
-              <tr>
-                <th>Part</th>
-                <th>SKU</th>
-                <th>Category</th>
-                <th>Supplier</th>
-                <th className="text-right">On hand</th>
-                <th className="text-right">Reorder at</th>
-                <th className="text-right">Lead time</th>
-                <th className="text-right">Unit cost</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {parts.map((p) => {
-                const low = p.qty_on_hand < p.reorder_point;
-                return (
-                  <tr
-                    key={p.id}
-                    className={cn("hover:bg-cream/60", low && "bg-risk-high/5")}
-                  >
-                    <td className="font-medium">{p.name}</td>
-                    <td className="font-mono text-xs text-ink-soft">{p.sku}</td>
-                    <td className="text-ink-soft">{p.category}</td>
-                    <td className="text-ink-soft">{p.supplier}</td>
-                    <td
-                      className={cn(
-                        "text-right font-mono",
-                        low && "font-semibold text-risk-high",
-                      )}
-                    >
-                      {p.qty_on_hand}
-                    </td>
-                    <td className="text-right font-mono text-ink-soft">
-                      {p.reorder_point}
-                    </td>
-                    <td className="text-right font-mono text-ink-soft">
-                      {p.lead_time_days}d
-                    </td>
-                    <td className="text-right font-mono text-ink-soft">
-                      {fmtMoney(p.unit_cost)}
-                    </td>
-                    <td>
-                      {low ? (
-                        <span className="chip bg-risk-high/10 text-risk-high">
-                          <AlertTriangle className="h-3 w-3" />
-                          Reorder needed
-                        </span>
-                      ) : (
-                        <span className="chip bg-risk-low/10 text-risk-low">
-                          In stock
-                        </span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <PartsTable parts={parts} />
     </div>
   );
 }

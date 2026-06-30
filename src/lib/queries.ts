@@ -224,13 +224,6 @@ export function getWorkOrders(status?: string): WorkOrderWithJoins[] {
     .all(...params) as WorkOrderWithJoins[];
 }
 
-export function getWorkOrderStatusCounts(): Record<string, number> {
-  const rows = getDb()
-    .prepare("SELECT status, COUNT(*) c FROM work_orders GROUP BY status")
-    .all() as { status: string; c: number }[];
-  return Object.fromEntries(rows.map((r) => [r.status, r.c]));
-}
-
 export function getWorkOrder(id: string): WorkOrderWithJoins | undefined {
   return getDb()
     .prepare(
