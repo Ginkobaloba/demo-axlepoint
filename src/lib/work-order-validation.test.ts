@@ -11,6 +11,18 @@ describe("screenWorkOrderTitle", () => {
     ).toBe(true);
   });
 
+  it("does not reject legit titles that merely start with test/sample", () => {
+    // These are real industrial work and must pass (review nit).
+    for (const ok of [
+      "Test bench calibration on rig 4",
+      "Sample collection port reseal",
+      "Sample line pressure check",
+      "Testing rig vibration survey",
+    ]) {
+      expect(screenWorkOrderTitle(ok).ok).toBe(true);
+    }
+  });
+
   it("rejects the known junk fixtures that leaked into the live demo", () => {
     for (const junk of [
       "Test",

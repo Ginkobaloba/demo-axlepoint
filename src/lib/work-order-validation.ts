@@ -12,13 +12,38 @@ export const MIN_TITLE_LEN = 6;
 
 // Titles that are obviously a developer poking the endpoint rather than a
 // real maintenance request. Matched against the trimmed, lowercased title.
+//
+// These are deliberately narrow to avoid rejecting legitimate industrial
+// titles: "Test bench calibration" and "Sample collection port reseal" are
+// real work and must pass. So we only reject "test"/"sample" when the whole
+// title is the bare word, or when "test" co-occurs with a fixture word
+// (order/audit/api/fixture/...) that signals a poke rather than a job.
 const JUNK_PATTERNS: RegExp[] = [
-  /^test\b/, // "test", "test order", "test audit work order"
-  /\btest (order|work order|wo)\b/,
-  /^json\b/, // "JSON API test order"
-  /\bapi test\b/,
-  /^(foo|bar|baz|asdf|qwerty|xxx+|todo|tbd|placeholder|sample|dummy|lorem)\b/,
+  /\btest\b.*\b(order|audit|api|fixture|record|entry|wo|ignore|delete)\b/, // "Test audit work order", "JSON API test order"
+  /\b(api|json)\b.*\btest\b/, // "JSON API test order"
+  /\blorem ipsum\b/,
 ];
+
+// Titles that are junk only when the entire (trimmed, lowercased) title is
+// exactly the word. "Sample line pressure check" is real; "sample" alone is not.
+const JUNK_EXACT = new Set([
+  "test",
+  "testing",
+  "sample",
+  "foo",
+  "bar",
+  "baz",
+  "asdf",
+  "qwerty",
+  "todo",
+  "tbd",
+  "placeholder",
+  "dummy",
+  "lorem",
+  "ignore",
+  "delete me",
+  "dummy data",
+]);
 
 export interface TitleScreen {
   ok: boolean;
@@ -39,13 +64,13 @@ export function screenWorkOrderTitle(rawTitle: string): TitleScreen {
     };
   }
   const lowered = title.toLowerCase();
-  for (const pattern of JUNK_PATTERNS) {
-    if (pattern.test(lowered)) {
-      return {
-        ok: false,
-        reason: "Title looks like a test fixture. Use a real work description.",
-      };
-    }
+  const isJunk =
+    JUNK_EXACT.has(lowered) || JUNK_PATTERNS.some((p) => p.test(lowered));
+  if (isJunk) {
+    return {
+      ok: false,
+      reason: "Title looks like a test fixture. Use a real work description.",
+    };
   }
   return { ok: true };
 }

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getAssets, getTechnicians } from "@/lib/queries";
+import { MIN_TITLE_LEN } from "@/lib/work-order-validation";
 
 export const dynamic = "force-dynamic";
 
@@ -75,7 +76,7 @@ export default function NewWorkOrderPage({
               id="title"
               name="title"
               required
-              minLength={6}
+              minLength={MIN_TITLE_LEN}
               maxLength={160}
               placeholder="What needs to happen?"
               className="input"
