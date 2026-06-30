@@ -347,6 +347,25 @@ CREATE TABLE maintenance_schedule (
   assigned_to TEXT,
   est_hours REAL NOT NULL
 );
+
+CREATE TABLE purchase_orders (
+  id TEXT PRIMARY KEY,
+  supplier TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  ordered_at INTEGER,
+  expected_at INTEGER,
+  received_at INTEGER,
+  notes TEXT
+);
+
+CREATE TABLE purchase_order_lines (
+  po_id TEXT NOT NULL,
+  part_id TEXT NOT NULL,
+  qty INTEGER NOT NULL,
+  unit_cost REAL NOT NULL
+);
+CREATE INDEX idx_po_lines ON purchase_order_lines(po_id);
 `);
 
 // ------------------------------------------------ readings + anomaly pass
@@ -888,6 +907,92 @@ db.transaction(() => {
       );
     }
   }
+})();
+
+// ------------------------------------------------------- purchase orders
+
+interface PartRow {
+  id: string;
+  supplier: string;
+  unit_cost: number;
+  lead_time_days: number;
+}
+
+const allParts = db
+  .prepare("SELECT id, supplier, unit_cost, lead_time_days FROM parts")
+  .all() as PartRow[];
+
+const partsBySupplier = new Map<string, PartRow[]>();
+for (const p of allParts) {
+  const list = partsBySupplier.get(p.supplier) ?? [];
+  list.push(p);
+  partsBySupplier.set(p.supplier, list);
+}
+
+const insertPo = db.prepare(`
+  INSERT INTO purchase_orders (id, supplier, status, created_at, ordered_at, expected_at, received_at, notes)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const insertPoLine = db.prepare(
+  "INSERT INTO purchase_order_lines (po_id, part_id, qty, unit_cost) VALUES (?, ?, ?, ?)",
+);
+
+// A realistic spread of historical and in-flight purchase orders so the
+// Purchase Orders view is populated before any reorder action is taken.
+const PO_PLAN: [string, number][] = [
+  ["received", 6],
+  ["ordered", 4],
+  ["draft", 3],
+];
+
+let poSeq = 1000;
+db.transaction(() => {
+  for (const [status, count] of PO_PLAN) {
+    for (let i = 0; i < count; i++) {
+      poSeq += 1;
+      const id = `PO-${poSeq}`;
+      const supplier = rng.pick([...partsBySupplier.keys()]);
+      const pool = partsBySupplier.get(supplier)!;
+      const lines = rng.shuffle([...pool]).slice(0, rng.int(1, 4));
+      const maxLead = Math.max(...lines.map((l) => l.lead_time_days));
+
+      let createdAt: number;
+      let orderedAt: number | null = null;
+      let expectedAt: number | null = null;
+      let receivedAt: number | null = null;
+
+      if (status === "received") {
+        createdAt = nowTs - rng.int(40, 130) * DAY;
+        orderedAt = createdAt + rng.int(1, 3) * DAY;
+        expectedAt = orderedAt + maxLead * DAY;
+        receivedAt = expectedAt + rng.int(-2, 4) * DAY;
+      } else if (status === "ordered") {
+        createdAt = nowTs - rng.int(3, 22) * DAY;
+        orderedAt = createdAt + rng.int(0, 2) * DAY;
+        expectedAt = orderedAt + maxLead * DAY;
+      } else {
+        createdAt = nowTs - rng.int(0, 5) * DAY - rng.int(1, 23) * HOUR;
+      }
+
+      insertPo.run(
+        id,
+        supplier,
+        status,
+        createdAt,
+        orderedAt,
+        expectedAt,
+        receivedAt,
+        null,
+      );
+      for (const line of lines) {
+        insertPoLine.run(id, line.id, rng.int(1, 10), line.unit_cost);
+      }
+    }
+  }
+  db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run(
+    "po_seq",
+    String(poSeq),
+  );
 })();
 
 // -------------------------------------------------------------------- meta

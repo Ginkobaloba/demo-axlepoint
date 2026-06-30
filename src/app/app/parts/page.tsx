@@ -1,4 +1,5 @@
 import { cn } from "@/lib/cn";
+import { CreateReorderPoButton } from "@/components/create-reorder-po-button";
 import { PartsTable } from "@/components/parts-table";
 import { fmtMoney, fmtNumber } from "@/lib/format";
 import { getParts } from "@/lib/queries";
@@ -26,11 +27,14 @@ export default function PartsPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Parts inventory</h1>
-        <p className="mt-1 text-sm text-ink-soft">
-          Stock levels tracked against reorder points and supplier lead times.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Parts inventory</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            Stock levels tracked against reorder points and supplier lead times.
+          </p>
+        </div>
+        <CreateReorderPoButton lowCount={lowStock.length} />
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
