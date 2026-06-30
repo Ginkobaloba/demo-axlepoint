@@ -1,10 +1,12 @@
 import { cn } from "@/lib/cn";
 import {
+  PO_STATUS_LABELS,
   RISK_BAND_LABELS,
   WO_STATUS_LABELS,
   WO_TYPE_LABELS,
   type AnomalySeverity,
   type AssetStatus,
+  type PurchaseOrderStatus,
   type RiskBand,
   type WorkOrderPriority,
   type WorkOrderStatus,
@@ -131,6 +133,21 @@ export function WoTypeChip({ type }: { type: WorkOrderType }) {
   return (
     <span className="chip border border-line bg-panel text-ink-soft">
       {WO_TYPE_LABELS[type]}
+    </span>
+  );
+}
+
+const PO_STATUS_CHIP: Record<PurchaseOrderStatus, string> = {
+  draft: "bg-gold/15 text-ink-soft",
+  ordered: "bg-forest/10 text-forest",
+  received: "bg-risk-low/10 text-risk-low",
+  cancelled: "bg-ink/5 text-ink-faint",
+};
+
+export function PoStatusChip({ status }: { status: PurchaseOrderStatus }) {
+  return (
+    <span className={cn("chip", PO_STATUS_CHIP[status])}>
+      {PO_STATUS_LABELS[status]}
     </span>
   );
 }

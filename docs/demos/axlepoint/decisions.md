@@ -164,3 +164,22 @@ non-mutating. The SortableTh header component is shared too. Work Orders gets
 search (id/title/asset/tech), status tabs, and type/priority filters; Parts
 gets search (name/sku/category/supplier), category, and stock-status filters.
 A "Showing N of M" line keeps the active filter honest.
+
+## D-010: Purchase-order entity closes the parts reorder loop
+
+The Parts table flagged "Reorder needed" with nowhere to go. Added a real
+purchase-order entity: two tables (purchase_orders, purchase_order_lines)
+seeded with 13 historical/in-flight POs, a Purchase Orders nav section
+(list + detail), and the reorder actions. "Create reorder PO" on the Parts
+page drafts one PO per supplier covering all below-reorder parts, with
+recommended quantities (recommendedReorderQty = reorder_point*2 - on_hand);
+a per-part "Reorder this part" button does the same for one part. POs move
+draft -> ordered -> received (pure transition rules in src/lib/po-actions.ts,
+unit-tested); ordering projects an expected-arrival date from the longest line
+lead time, and RECEIVING is the one place inventory stock is incremented (the
+counterpart to attaching parts to work orders, which deliberately does not
+touch stock -- D-007). The parts<->WO link is closed both ways: a part detail
+page (/app/parts/[id]) lists the work orders consuming it and the POs that
+include it; work orders already showed their parts. Verified end-to-end:
+create reorder -> 5 low parts became 3 supplier POs -> receive one -> the 3
+restocked parts dropped off the below-reorder list.

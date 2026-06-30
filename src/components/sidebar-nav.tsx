@@ -8,6 +8,7 @@ import {
   CalendarDays,
   ClipboardList,
   LayoutDashboard,
+  ShoppingCart,
   Users,
   Wrench,
 } from "lucide-react";
@@ -19,6 +20,7 @@ const NAV = [
   { href: "/app/work-orders", label: "Work Orders", icon: ClipboardList },
   { href: "/app/schedule", label: "Schedule", icon: CalendarDays },
   { href: "/app/parts", label: "Parts", icon: Wrench },
+  { href: "/app/purchase-orders", label: "Purchase Orders", icon: ShoppingCart },
   { href: "/app/team", label: "Team", icon: Users },
   { href: "/app/reports", label: "Reports", icon: BarChart3 },
 ];

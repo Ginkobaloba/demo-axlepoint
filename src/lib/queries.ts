@@ -1,10 +1,14 @@
 import { getDb } from "./db";
 import { completionForStatus } from "./wo-actions";
+import { recommendedReorderQty } from "./po-actions";
 import type {
   Anomaly,
   Asset,
   MaintenanceTask,
   Part,
+  PurchaseOrder,
+  PurchaseOrderLine,
+  PurchaseOrderStatus,
   SensorType,
   Technician,
   WorkOrder,
@@ -435,6 +439,210 @@ export function getTechnicians(): TechnicianWithLoad[] {
        FROM technicians t ORDER BY t.name`,
     )
     .all() as TechnicianWithLoad[];
+}
+
+// ----------------------------------------------------- purchase orders
+
+export interface PurchaseOrderSummary extends PurchaseOrder {
+  line_count: number;
+  total: number;
+}
+
+export function getPurchaseOrders(): PurchaseOrderSummary[] {
+  return getDb()
+    .prepare(
+      `SELECT po.*,
+              COUNT(l.part_id) AS line_count,
+              COALESCE(SUM(l.qty * l.unit_cost), 0) AS total
+       FROM purchase_orders po
+       LEFT JOIN purchase_order_lines l ON l.po_id = po.id
+       GROUP BY po.id
+       ORDER BY CASE po.status
+                  WHEN 'draft' THEN 0 WHEN 'ordered' THEN 1
+                  WHEN 'received' THEN 2 ELSE 3 END,
+                po.created_at DESC`,
+    )
+    .all() as PurchaseOrderSummary[];
+}
+
+export function getPurchaseOrder(id: string): PurchaseOrder | undefined {
+  return getDb()
+    .prepare("SELECT * FROM purchase_orders WHERE id = ?")
+    .get(id) as PurchaseOrder | undefined;
+}
+
+export interface PurchaseOrderLineWithPart extends PurchaseOrderLine {
+  name: string;
+  sku: string;
+  category: string;
+  lead_time_days: number;
+}
+
+export function getPurchaseOrderLines(poId: string): PurchaseOrderLineWithPart[] {
+  return getDb()
+    .prepare(
+      `SELECT l.*, p.name, p.sku, p.category, p.lead_time_days
+       FROM purchase_order_lines l JOIN parts p ON p.id = l.part_id
+       WHERE l.po_id = ? ORDER BY p.category, p.name`,
+    )
+    .all(poId) as PurchaseOrderLineWithPart[];
+}
+
+export function getBelowReorderParts(): Part[] {
+  return getDb()
+    .prepare(
+      "SELECT * FROM parts WHERE qty_on_hand < reorder_point ORDER BY supplier, name",
+    )
+    .all() as Part[];
+}
+
+export interface ReorderResult {
+  created: number;
+  poIds: string[];
+  partCount: number;
+}
+
+/**
+ * Create draft purchase orders to restock parts. With no partIds, restocks
+ * every below-reorder part. Parts are grouped by supplier into one draft PO
+ * each, with recommended quantities. Returns what was created.
+ */
+export function createReorderPurchaseOrders(partIds?: string[]): ReorderResult {
+  const db = getDb();
+  return db.transaction(() => {
+    let parts: Part[];
+    if (partIds && partIds.length) {
+      const placeholders = partIds.map(() => "?").join(",");
+      parts = db
+        .prepare(`SELECT * FROM parts WHERE id IN (${placeholders})`)
+        .all(...partIds) as Part[];
+    } else {
+      parts = db
+        .prepare("SELECT * FROM parts WHERE qty_on_hand < reorder_point")
+        .all() as Part[];
+    }
+    if (!parts.length) return { created: 0, poIds: [], partCount: 0 };
+
+    const bySupplier = new Map<string, Part[]>();
+    for (const p of parts) {
+      const list = bySupplier.get(p.supplier) ?? [];
+      list.push(p);
+      bySupplier.set(p.supplier, list);
+    }
+
+    const seqRow = db
+      .prepare("SELECT value FROM meta WHERE key = 'po_seq'")
+      .get() as { value: string };
+    let seq = Number(seqRow.value);
+    const now = nowSec();
+    const poIds: string[] = [];
+
+    const insertPo = db.prepare(
+      `INSERT INTO purchase_orders (id, supplier, status, created_at, ordered_at, expected_at, received_at, notes)
+       VALUES (?, ?, 'draft', ?, NULL, NULL, NULL, ?)`,
+    );
+    const insertLine = db.prepare(
+      "INSERT INTO purchase_order_lines (po_id, part_id, qty, unit_cost) VALUES (?, ?, ?, ?)",
+    );
+
+    for (const [supplier, supplierParts] of bySupplier) {
+      seq += 1;
+      const id = `PO-${seq}`;
+      insertPo.run(id, supplier, now, "Auto-drafted from a reorder alert.");
+      for (const p of supplierParts) {
+        insertLine.run(id, p.id, recommendedReorderQty(p), p.unit_cost);
+      }
+      poIds.push(id);
+    }
+
+    db.prepare("UPDATE meta SET value = ? WHERE key = 'po_seq'").run(
+      String(seq),
+    );
+    return { created: poIds.length, poIds, partCount: parts.length };
+  })();
+}
+
+/**
+ * Move a purchase order along its lifecycle. Ordering stamps the order date
+ * and projects an expected arrival from the longest line lead time. Receiving
+ * restocks every line's part against on-hand inventory -- this is the one
+ * place stock is incremented, the counterpart to attaching parts to work
+ * orders (which deliberately does not touch stock).
+ */
+export function setPurchaseOrderStatus(
+  id: string,
+  status: PurchaseOrderStatus,
+): void {
+  const db = getDb();
+  db.transaction(() => {
+    const now = nowSec();
+    if (status === "ordered") {
+      const lead = db
+        .prepare(
+          `SELECT COALESCE(MAX(p.lead_time_days), 7) AS d
+           FROM purchase_order_lines l JOIN parts p ON p.id = l.part_id
+           WHERE l.po_id = ?`,
+        )
+        .get(id) as { d: number };
+      db.prepare(
+        "UPDATE purchase_orders SET status = 'ordered', ordered_at = ?, expected_at = ? WHERE id = ?",
+      ).run(now, now + lead.d * DAY, id);
+    } else if (status === "received") {
+      const lines = db
+        .prepare(
+          "SELECT part_id, qty FROM purchase_order_lines WHERE po_id = ?",
+        )
+        .all(id) as { part_id: string; qty: number }[];
+      const restock = db.prepare(
+        "UPDATE parts SET qty_on_hand = qty_on_hand + ? WHERE id = ?",
+      );
+      for (const line of lines) restock.run(line.qty, line.part_id);
+      db.prepare(
+        "UPDATE purchase_orders SET status = 'received', received_at = ? WHERE id = ?",
+      ).run(now, id);
+    } else {
+      db.prepare("UPDATE purchase_orders SET status = ? WHERE id = ?").run(
+        status,
+        id,
+      );
+    }
+  })();
+}
+
+// ----------------------------------------------- part <-> work-order links
+
+export interface WorkOrderConsumingPart extends WorkOrderWithJoins {
+  line_qty: number;
+}
+
+export function getPartConsumingWorkOrders(
+  partId: string,
+): WorkOrderConsumingPart[] {
+  return getDb()
+    .prepare(
+      `SELECT w.*, a.name AS asset_name, t.name AS technician_name, wp.qty AS line_qty
+       FROM work_order_parts wp
+       JOIN work_orders w ON w.id = wp.work_order_id
+       JOIN assets a ON a.id = w.asset_id
+       LEFT JOIN technicians t ON t.id = w.assigned_to
+       WHERE wp.part_id = ?
+       ORDER BY CASE w.status WHEN 'closed' THEN 1 ELSE 0 END, w.created_at DESC`,
+    )
+    .all(partId) as WorkOrderConsumingPart[];
+}
+
+export function getPartPurchaseOrders(partId: string): PurchaseOrderSummary[] {
+  return getDb()
+    .prepare(
+      `SELECT po.*, COUNT(l2.part_id) AS line_count,
+              COALESCE(SUM(l2.qty * l2.unit_cost), 0) AS total
+       FROM purchase_orders po
+       JOIN purchase_order_lines l ON l.po_id = po.id AND l.part_id = ?
+       LEFT JOIN purchase_order_lines l2 ON l2.po_id = po.id
+       GROUP BY po.id
+       ORDER BY po.created_at DESC`,
+    )
+    .all(partId) as PurchaseOrderSummary[];
 }
 
 // ------------------------------------------------------------------- reports

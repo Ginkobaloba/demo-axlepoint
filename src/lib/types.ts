@@ -101,6 +101,26 @@ export interface Technician {
   hired_on: string;
 }
 
+export type PurchaseOrderStatus = "draft" | "ordered" | "received" | "cancelled";
+
+export interface PurchaseOrder {
+  id: string;
+  supplier: string;
+  status: PurchaseOrderStatus;
+  created_at: number;
+  ordered_at: number | null;
+  expected_at: number | null;
+  received_at: number | null;
+  notes: string | null;
+}
+
+export interface PurchaseOrderLine {
+  po_id: string;
+  part_id: string;
+  qty: number;
+  unit_cost: number; // snapshot at PO creation
+}
+
 export interface MaintenanceTask {
   id: string;
   asset_id: string;
@@ -148,6 +168,13 @@ export const WO_TYPE_LABELS: Record<WorkOrderType, string> = {
   preventive: "Preventive",
   inspection: "Inspection",
   predictive: "Predictive",
+};
+
+export const PO_STATUS_LABELS: Record<PurchaseOrderStatus, string> = {
+  draft: "Draft",
+  ordered: "Ordered",
+  received: "Received",
+  cancelled: "Cancelled",
 };
 
 export function riskBand(score: number): RiskBand {

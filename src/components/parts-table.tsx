@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import { AlertTriangle, Search } from "lucide-react";
 import { SortableTh } from "@/components/sortable-th";
@@ -125,7 +126,14 @@ export function PartsTable({ parts }: { parts: Part[] }) {
                     key={p.id}
                     className={cn("hover:bg-cream/60", low && "bg-risk-high/5")}
                   >
-                    <td className="font-medium">{p.name}</td>
+                    <td className="font-medium">
+                      <Link
+                        href={`/app/parts/${p.id}`}
+                        className="text-ink hover:text-forest hover:underline"
+                      >
+                        {p.name}
+                      </Link>
+                    </td>
                     <td className="font-mono text-xs text-ink-soft">{p.sku}</td>
                     <td className="text-ink-soft">{p.category}</td>
                     <td className="text-ink-soft">{p.supplier}</td>
