@@ -20,9 +20,7 @@
 
 import { describe, it, expect, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
-import {
-  makeHandler,
-} from "./route";
+import { makeHandler } from "@/lib/portal-handoff-handler";
 import {
   type VerifierConfig,
   _resetPortalVerifyCachesForTests,

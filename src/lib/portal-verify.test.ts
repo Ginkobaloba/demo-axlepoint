@@ -28,7 +28,6 @@ import {
   IssuedInFuture,
   WrongAudience,
   WrongIssuer,
-  UnknownKid,
   MalformedToken,
   JwksFetchError,
   type VerifierConfig,
