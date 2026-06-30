@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getAssets, getTechnicians } from "@/lib/queries";
+import { MIN_TITLE_LEN } from "@/lib/work-order-validation";
 
 export const dynamic = "force-dynamic";
 
@@ -9,11 +10,12 @@ export const metadata = { title: "New Work Order" };
 export default function NewWorkOrderPage({
   searchParams,
 }: {
-  searchParams: { asset?: string };
+  searchParams: { asset?: string; error?: string };
 }) {
   const assets = getAssets();
   const technicians = getTechnicians();
   const preselected = searchParams.asset;
+  const error = searchParams.error;
 
   return (
     <div className="mx-auto max-w-2xl space-y-5">
@@ -32,6 +34,12 @@ export default function NewWorkOrderPage({
             Creates an open order in the demo workspace.
           </p>
         </div>
+
+        {error && (
+          <div className="mx-5 mt-4 rounded-md border border-risk-high/30 bg-risk-high/10 px-4 py-3 text-sm font-medium text-risk-high">
+            {error}
+          </div>
+        )}
 
         <form
           method="POST"
@@ -68,10 +76,14 @@ export default function NewWorkOrderPage({
               id="title"
               name="title"
               required
+              minLength={MIN_TITLE_LEN}
               maxLength={160}
               placeholder="What needs to happen?"
               className="input"
             />
+            <p className="mt-1 text-xs text-ink-faint">
+              Describe the work. Test or placeholder titles are rejected.
+            </p>
           </div>
 
           <div>
