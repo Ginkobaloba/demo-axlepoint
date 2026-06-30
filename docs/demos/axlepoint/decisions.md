@@ -110,3 +110,16 @@ single function call.
 Tier 2 additive: no existing behavior changes. Shipping is safe even
 if the portal subdomain is mid-deploy because the JWKS fetch is
 lazy-on-first-handoff and the demo cookie path is unaffected.
+
+## D-006: Work-order titles are screened at the create endpoint
+
+The seed generator never produces junk, but POST /api/work-orders is open and
+the running container persists drafts until the next redeploy (D-005). Ad-hoc
+API pokes during deploys ("Test", "JSON API test order", "Test audit work
+order") therefore leaked into the live work-order list where a prospect could
+see them. `screenWorkOrderTitle` (src/lib/work-order-validation.ts) rejects
+titles under 6 chars and obvious test/placeholder patterns, returning 422 to
+JSON callers and a relative redirect back to the form (with the reason) for
+form posts. The clean seed plus this guard means a redeploy clears the
+existing junk and nothing of that shape can re-accumulate. Note: the junk was
+runtime-only state, not a seed defect, so no generator change was needed.

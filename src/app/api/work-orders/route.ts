@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createWorkOrder, getAsset } from "@/lib/queries";
 import type { WorkOrderPriority, WorkOrderType } from "@/lib/types";
+import { screenWorkOrderTitle } from "@/lib/work-order-validation";
 
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const TYPES = ["corrective", "preventive", "inspection", "predictive"];
@@ -21,8 +22,24 @@ export async function POST(request: NextRequest) {
   const priority = String(raw.priority ?? "medium");
   const type = String(raw.type ?? "preventive");
 
+  // Form posts get a relative redirect back to the form with the reason;
+  // JSON callers (Recommend Preventive Action) get a JSON error body.
+  const reject = (status: number, reason: string) => {
+    if (isForm) {
+      const back = `/app/work-orders/new?error=${encodeURIComponent(reason)}`;
+      return new NextResponse(null, { status: 303, headers: { Location: back } });
+    }
+    return NextResponse.json({ error: reason }, { status });
+  };
+
   if (!asset || !title || !PRIORITIES.includes(priority) || !TYPES.includes(type)) {
-    return NextResponse.json({ error: "bad request" }, { status: 400 });
+    return reject(400, "Pick an asset and a valid title, type, and priority.");
+  }
+
+  // Reject test fixtures and junk so they cannot accumulate in the live demo.
+  const screen = screenWorkOrderTitle(title);
+  if (!screen.ok) {
+    return reject(422, screen.reason ?? "Invalid title.");
   }
 
   const dueRaw = String(raw.due_date ?? "").trim();
