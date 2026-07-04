@@ -6,7 +6,7 @@ Read these on top of the global CLAUDE.md and `C:\dev\SESSION_PROTOCOL.md`.
 
 AxlePoint Industrial: a fictional predictive maintenance product, built as
 a Paradigm Coding Solutions portfolio demo. Live at
-https://axlepoint.projectnexuscode.org (DREWSPC host port 8102, deployed
+https://axlepoint.projectnexuscode.org (<HOST> host port 8102, deployed
 via `cloudflare-config\scripts\deploy-demo.ps1`).
 
 Origin spec: the demo handoff `HANDOFF_20260609_demomaintenancemanagement.md`

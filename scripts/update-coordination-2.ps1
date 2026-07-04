@@ -3,7 +3,7 @@ $path = "C:\dev\DEMOS_RUNNING_HANDOFF.md"
 $text = [System.IO.File]::ReadAllText($path)
 
 $oldRow = "| Demo 1: AxlePoint (maintenance mgmt) | AxlePoint session | APP COMPLETE (chunks 1.1-1.11), pushed to GitHub; container build running; deploying to axlepoint.projectnexuscode.org next | 2026-06-10 (post-interview) |"
-$newRow = "| Demo 1: AxlePoint (maintenance mgmt) | AxlePoint session | LIVE at https://axlepoint.projectnexuscode.org (DREWSPC only, BROOKFIELD pending ssh fix); /work card + case study published | 2026-06-10 (pm) |"
+$newRow = "| Demo 1: AxlePoint (maintenance mgmt) | AxlePoint session | LIVE at https://axlepoint.projectnexuscode.org (<HOST> only, BROOKFIELD pending ssh fix); /work card + case study published | 2026-06-10 (pm) |"
 
 $anchor = @"
   - Local port note for sibling sessions: port 3000 on this box is held
@@ -19,9 +19,9 @@ $addition = @"
     BROOKFIELD skipped by the script (known ssh perms blocker).
   - paradigm-site: PR #31 (Live demos section on /work + /work/axlepoint
     case study) and PR #32 (nginx fix, below) merged; site recreated on
-    DREWSPC from ``sha-e2d1f71``; all public routes verified 200, gated
+    <HOST> from ``sha-e2d1f71``; all public routes verified 200, gated
     routes still 404. Rollback image kept as
-    ``paradigm-site:rollback-pre-pr31`` on DREWSPC.
+    ``paradigm-site:rollback-pre-pr31`` on <HOST>.
   - **INCIDENT (resolved, ~3 min exposure): /work 403 after PR #31
     deploy.** Astro file output creates ``dist/work/`` for the nested case
     study page, and the strict nginx try_files checked ``$uri/`` before

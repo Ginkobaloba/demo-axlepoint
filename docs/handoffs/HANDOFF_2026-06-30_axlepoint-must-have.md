@@ -42,7 +42,7 @@ Every PR: `next build` green, vitest green (61 tests total across the session),
 and a browser click-through of the actual workflow (not just a page load).
 Decisions D-006 through D-011 logged in docs/demos/axlepoint/decisions.md.
 
-- **Redeployed to DREWSPC** (`-LocalOnly`, the tunnel origin). The fresh image
+- **Redeployed to <HOST>** (`-LocalOnly`, the tunnel origin). The fresh image
   ran `db:generate && next build`, so the live DB is clean (no junk WOs) and
   has the PO tables. Verified: https://axlepoint.projectnexuscode.org returns
   200 through Cloudflare with "AxlePoint", and an authenticated container smoke
@@ -64,7 +64,7 @@ Decisions D-006 through D-011 logged in docs/demos/axlepoint/decisions.md.
   Until that lands, deploy axlepoint by hand or with a throwaway `.env.demo`.
 - **BROOKFIELD HA still degraded.** Deploy was `-LocalOnly`; BROOKFIELD has no
   axlepoint container (pre-existing ssh blocker). The tunnel serves from
-  DREWSPC alone.
+  <HOST> alone.
 - **17 Dependabot alerts** on the repo (6 high / 8 moderate / 3 low),
   pre-existing, not addressed this session.
 - **Git worktree wrinkle:** `main` is checked out in another worktree
@@ -92,7 +92,7 @@ Decisions D-006 through D-011 logged in docs/demos/axlepoint/decisions.md.
 ## Pointers
 
 - Decisions log: docs/demos/axlepoint/decisions.md (D-001..D-011)
-- Live site: https://axlepoint.projectnexuscode.org (DREWSPC, host port 8102)
+- Live site: https://axlepoint.projectnexuscode.org (<HOST>, host port 8102)
 - Deploy recipe: project CLAUDE.md "Deploy" section (note the env-file bug above)
 - Prior handoff: docs/handoffs/HANDOFF_2026-06-10_axlepoint-live.md
 

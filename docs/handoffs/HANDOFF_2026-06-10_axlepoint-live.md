@@ -21,7 +21,7 @@
   mobile checked at 375px and 390px.
 - **DEPLOYED: https://axlepoint.projectnexuscode.org is LIVE** with valid
   TLS via the Phase 0 pipeline (`deploy-demo.ps1`, host port 8102,
-  DREWSPC only; BROOKFIELD skipped, see below). Verified externally
+  <HOST> only; BROOKFIELD skipped, see below). Verified externally
   twice (initial deploy + polish redeploy).
 - **Repo**: `Ginkobaloba/demo-axlepoint` (private), main at `e4f91e0`
   plus this handoff commit, delete_branch_on_merge on.
@@ -42,7 +42,7 @@
   fixed in PR #32 (`e2d1f71`: resolve $uri.html before directory lookup,
   never serve bare directories), redeployed from `sha-e2d1f71`, all
   public routes verified 200 and gated routes still 404. Rollback image
-  retained as `paradigm-site:rollback-pre-pr31` on DREWSPC; safe to
+  retained as `paradigm-site:rollback-pre-pr31` on <HOST>; safe to
   delete once the fix has soaked.
 - **BROOKFIELD has no AxlePoint container** (host unreachable + ssh
   config perms block agent-side ssh: "Bad owner or permissions on
@@ -60,7 +60,7 @@
 1. Read `C:\dev\DEMOS_RUNNING_HANDOFF.md` for cross-demo state.
 2. If paradigm-site CI for `dd75906` is green and /work on the live site
    does not show the Live demos section yet: pull the sha image and
-   recreate the container on DREWSPC, verify
+   recreate the container on <HOST>, verify
    https://projectnexuscode.org/work shows the AxlePoint card and
    /work/axlepoint renders.
 3. Optional polish backlog (none blocking): a dashboard site/type risk
