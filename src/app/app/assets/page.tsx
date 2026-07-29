@@ -45,11 +45,12 @@ function FilterSelect({
   );
 }
 
-export default function AssetsPage({
-  searchParams,
-}: {
-  searchParams: SearchParams;
-}) {
+export default async function AssetsPage(
+  props: {
+    searchParams: Promise<SearchParams>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const assets = getAssets(searchParams);
   const locations = getLocations();
   const hasFilters = Boolean(

@@ -23,10 +23,8 @@ const SENSORS: SensorType[] = [
   "fuel_rate",
 ];
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { id: string } },
-) {
+export async function GET(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const asset = getAsset(params.id);
   if (!asset) {
     return NextResponse.json({ error: "asset not found" }, { status: 404 });

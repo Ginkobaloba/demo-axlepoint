@@ -7,11 +7,12 @@ export const dynamic = "force-dynamic";
 
 export const metadata = { title: "New Work Order" };
 
-export default function NewWorkOrderPage({
-  searchParams,
-}: {
-  searchParams: { asset?: string; error?: string };
-}) {
+export default async function NewWorkOrderPage(
+  props: {
+    searchParams: Promise<{ asset?: string; error?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const assets = getAssets();
   const technicians = getTechnicians();
   const preselected = searchParams.asset;
