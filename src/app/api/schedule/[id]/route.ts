@@ -6,10 +6,8 @@ import { isValidIsoDate } from "@/lib/schedule-view";
  * Reschedule a preventive maintenance task. Body: { next_due: "YYYY-MM-DD" }.
  * Drives drag-to-reschedule on the schedule board.
  */
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: { id: string } },
-) {
+export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const task = getMaintenanceTask(params.id);
   if (!task) {
     return NextResponse.json({ error: "not found" }, { status: 404 });

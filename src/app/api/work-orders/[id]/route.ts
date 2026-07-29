@@ -17,10 +17,8 @@ import { parseWorkOrderPatch } from "@/lib/wo-actions";
  * attach parts. Writes land in the container SQLite and reset on the next
  * redeploy (decisions D-005), same as createWorkOrder.
  */
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: { id: string } },
-) {
+export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const wo = getWorkOrder(params.id);
   if (!wo) {
     return NextResponse.json({ error: "not found" }, { status: 404 });

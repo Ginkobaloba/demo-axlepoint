@@ -16,11 +16,12 @@ import {
 
 export const dynamic = "force-dynamic";
 
-export default function PartDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default async function PartDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+  }
+) {
+  const params = await props.params;
   const part = getPart(params.id);
   if (!part) notFound();
   const low = part.qty_on_hand < part.reorder_point;

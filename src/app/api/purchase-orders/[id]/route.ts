@@ -6,10 +6,8 @@ import { parsePoStatusPatch } from "@/lib/po-actions";
  * Move a purchase order along its lifecycle (draft -> ordered -> received,
  * or cancelled). Receiving restocks the parts on the order.
  */
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: { id: string } },
-) {
+export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
+  const params = await props.params;
   const po = getPurchaseOrder(params.id);
   if (!po) {
     return NextResponse.json({ error: "not found" }, { status: 404 });

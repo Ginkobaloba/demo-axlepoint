@@ -8,11 +8,12 @@ export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Purchase Orders" };
 
-export default function PurchaseOrdersPage({
-  searchParams,
-}: {
-  searchParams: { created?: string };
-}) {
+export default async function PurchaseOrdersPage(
+  props: {
+    searchParams: Promise<{ created?: string }>;
+  }
+) {
+  const searchParams = await props.searchParams;
   const pos = getPurchaseOrders();
   const draft = pos.filter((p) => p.status === "draft");
   const ordered = pos.filter((p) => p.status === "ordered");

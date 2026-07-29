@@ -44,11 +44,12 @@ const BAND_BAR: Record<RiskBand, string> = {
   critical: "bg-risk-critical",
 };
 
-export default function AssetDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default async function AssetDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+  }
+) {
+  const params = await props.params;
   const asset = getAsset(params.id);
   if (!asset) notFound();
 

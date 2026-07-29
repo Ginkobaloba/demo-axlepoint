@@ -8,11 +8,12 @@ import { getPurchaseOrder, getPurchaseOrderLines } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
-export default function PurchaseOrderDetailPage({
-  params,
-}: {
-  params: { id: string };
-}) {
+export default async function PurchaseOrderDetailPage(
+  props: {
+    params: Promise<{ id: string }>;
+  }
+) {
+  const params = await props.params;
   const po = getPurchaseOrder(params.id);
   if (!po) notFound();
   const lines = getPurchaseOrderLines(po.id);
