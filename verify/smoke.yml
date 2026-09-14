@@ -22,38 +22,43 @@ surfaces:
       - { type: header_present, header: "Strict-Transport-Security" }
       - { type: selector_present, selector: "form[action='/api/session']" }
 
-  - name: dashboard
+  # Everything under /app is gated. Quick smoke is one anonymous curl with no
+  # cookie jar, so the only contract it can honestly assert here is that the
+  # gate is CLOSED: each route bounces to the sign-in page and the landing
+  # page really is the sign-in form. The authenticated views (the dashboard
+  # copy, the asset table, the work-order form) need a real session and a
+  # browser, so they are deep-verify surfaces, not quick ones.
+  #
+  # This block used to assert the authenticated copy on an anonymous request
+  # while ALSO asserting, at the bottom of the file, that an anonymous request
+  # is redirected away. Both cannot hold in one run, so the gate failed on
+  # every PR precisely because the app was behaving correctly.
+  - name: dashboard-gated
     url: /app
     assertions:
+      - { type: redirects_to, expect: "/?signin=required" }
       - { type: http_status, expect: 200 }
-      - { type: text_present, text: "Operations dashboard" }
-      - { type: text_present, text: "Fleet risk distribution" }
-      - { type: text_present, text: "Recent anomalies" }
+      - { type: text_present, text: "Sign in" }
       - { type: header_present, header: "Strict-Transport-Security" }
 
-  - name: assets
+  - name: assets-gated
     url: /app/assets
     assertions:
-      - { type: http_status, expect: 200 }
-      - { type: text_present, text: "Assets" }
-      - { type: text_present, text: "under monitoring" }
+      - { type: redirects_to, expect: "/?signin=required" }
       - { type: header_present, header: "Strict-Transport-Security" }
 
-  - name: work-orders
+  - name: work-orders-gated
     url: /app/work-orders
     assertions:
-      - { type: http_status, expect: 200 }
-      - { type: text_present, text: "Work orders" }
-      - { type: text_present, text: "New work order" }
+      - { type: redirects_to, expect: "/?signin=required" }
       - { type: header_present, header: "Strict-Transport-Security" }
 
-  - name: session-signin
+  # /api/session is the sign-in handler and accepts POST only. quick_smoke.sh
+  # issues a GET, so 405 is the correct expectation and a real one: a 404 here
+  # would mean the route had gone, and a 2xx/3xx would mean it started
+  # answering GETs. This matches demo-slatewell's admin-session-post surface.
+  # The POST that actually signs a user in is a deep-verify step.
+  - name: session-signin-rejects-get
     url: /api/session
     assertions:
-      - { type: http_status, expect: 303 }
-
-  - name: unauthenticated-redirect
-    url: /app
-    assertions:
-      # Without a session cookie the middleware must redirect to /?signin=required
-      - { type: redirects_to, expect: "/?signin=required" }
+      - { type: http_status, expect: 405 }
