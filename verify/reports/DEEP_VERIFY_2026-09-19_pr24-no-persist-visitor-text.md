@@ -1,7 +1,284 @@
 # Deep Verify: PR #24 stop persisting visitor-typed work-order text (2026-09-19)
 
 Overall: FAIL
-Tested-SHA: 4bbb480f1b94f9f0c4c45ecb80c5a4e797b2855b
+Tested-SHA: fb2639bfa515657a88cf194868d021d7c0c9dd99
+
+## Re-verify (round 2): fb2639b, Overall: FAIL
+
+This is a re-verify of `fb2639bfa515657a88cf194868d021d7c0c9dd99`, the builder's fix
+commit on top of the round-1 tested commit `4bbb480`. (`684b54b`, the round-1
+report, sits between them.) One production image, `demo-axlepoint:dv24`
+(`sha256:55b13714aaba...`), was built from the new head with the same BuildKit npmrc
+secret pattern. The temporary npmrc was deleted and its absence confirmed. Every
+`dva24-*` container and the image were removed at the end. The live container was
+untouched.
+
+**Verdict: FAIL, one new blocker (B2), introduced by the fix commit.** The
+privacy fix itself is now complete, and so are W2 and W4. But the new
+`chmod 444 /app/data/axlepoint.seed.db` in the Dockerfile breaks the image:
+- `fs.copyFileSync` copies the source file's permission bits;
+- so the boot reset turns the **live** database into `-r--r--r--` on the first
+  request after every container start;
+- from then on every write returns 500 with `SqliteError: attempt to write a
+  readonly database`: creating a work order, every PATCH, POs and schedule;
+- the demo's headline flow is dead as built.
+
+The 88 unit tests do not catch it because the test fixtures never make the seed
+read-only.
+
+Round-2 totals:
+- **as-built image:**
+  - marker sweep of 83 requests: 9 5xx;
+  - race run: 200 of 200 writes returned 500;
+  - headless regression: 10 of 20;
+- **same image with the seed made writable again at start** (`chmod 644`, to
+  test the rest of the fix separately):
+  - marker sweep: 83 requests, 0 5xx, 0 markers in the DB, WAL, HTML or RSC;
+  - headless: 20 of 20;
+  - reset matrix: 5 of 5;
+  - race: 0 5xx;
+- **code:** 88 of 88 unit tests, `tsc` clean.
+
+### R2.1 Diff review, 4bbb480 to fb2639b
+
+`git diff 4bbb480 fb2639b` changes 9 files: Dockerfile, decisions.md, both work-order
+routes, route.test.ts, db.ts, queries.ts, test fixtures, plus the round-1 report.
+
+- **B1 fix (correct):**
+  - New `getTechnician(id)` with a parameterized `SELECT`.
+  - POST trims `assigned_to`. Empty or absent means null; anything else must exist,
+    else 422 (the form path gets a relative 303 to `?error=Unknown technician.`).
+  - PATCH `assign` checks `getTechnician` before the write, else 422.
+  - The parser stays DB-free, which is reasonable.
+- **W2 fix (correct):** a relative `Location: /app/work-orders/<id>?created=1`, 303.
+  The JSON `url` is unchanged in meaning.
+- **W4 fix (correct):** POST returns 422 on a NaN date, like PATCH.
+- **Log hardening (correct):** one line per failed reset.
+- **Dockerfile `chmod 444` seed: DEFECT (B2).** `resetDbIfDue` still does
+  `fs.copyFileSync(SEED_DB_PATH, tmp); fs.renameSync(tmp, DB_PATH)`. There is no
+  chmod of the temp file, so the mode propagates to the live DB.
+- **D-012 addendum:** it accurately corrects the `assigned_to` claim. It says the
+  read-only seed "hardens" the reset, which is the opposite of what happens.
+
+### R2.2 Re-audit of every stored string a visitor controls
+
+This does not rely on the builder's list. I listed every `INSERT`, `UPDATE` and
+`DELETE` in `src/lib/queries.ts` (20 statements) and traced each bound value back to
+the request:
+
+| Column | Source | Visitor free text? |
+|---|---|---|
+| work_orders.title / description | derived / fixed notice / `risk_factors` | no |
+| work_orders.assigned_to | `getTechnician` must match (both routes) | no (fixed) |
+| work_orders.status / priority / type | enum lists | no |
+| work_orders.due_at, created_at, completed_at | numbers | no |
+| work_order_parts.part_id / qty | `getPart` must match / int 1..999 | no |
+| maintenance_schedule.next_due | `isValidIsoDate` (regex plus round-trip) | no |
+| purchase_orders.* | supplier from `parts` rows, fixed notes, status via parser | no |
+| purchase_order_lines.* | ids matched from `parts` | no |
+| meta.wo_seq / po_seq | server counters | no |
+
+No remaining free-text path was found. Each row was also checked at runtime by
+the sweep below.
+
+### R2.3 Marker sweep (claim 1), all 8 routes, 5 methods, all encodings
+
+I re-ran the round-1 matrix (83 requests, `attack.sh`), which puts a marker in every
+field, including `assigned_to`, on POST JSON, multipart and urlencoded, and on
+PATCH seed and new rows.
+
+I added a valid-path set so creates actually succeed while carrying markers in
+every other field:
+- 4 types by JSON with `assigned_to=" TCH-01 "`;
+- 4 types by form with `TCH-02`;
+- 1 urlencoded create with an empty `assigned_to`.
+
+I also added `assigned_to` variants on PATCH: `"TCH-01 DVA24M-x"`, `"tch-01"`,
+`"TCH-01%"`, an SQL-quote payload, a number, an object, and null.
+
+Results:
+- **Seed made writable (dva24-rw):**
+  - Status codes: 11x200, 7x303, 8x400, 1x401, 2x404, 32x405, 22x422, **0 5xx**.
+  - Every marker `assigned_to` returned 422 `Unknown technician.` All 6 bad PATCH
+    variants returned 422. `TCH-03` and null returned 200.
+  - Raw DB scan of every column in all 12 tables: `TOTAL_HITS 0`. `grep -c DVA24M`
+    on the db, WAL, shm and seed files: 0, 0, 0, 0.
+  - The stored rows show derived titles, the fixed notice, `assigned_to` in
+    {`TCH-01`, `TCH-02`, `TCH-03`, null}, and numeric `due_at`.
+- **Fresh client** (new cookie jar), HTML and `RSC: 1` flight on 16 URLs (list,
+  `?status=open`, 6 WO details including seed WO-1001, asset, PO list, 2 PO
+  details, schedule, parts, reports): 0 markers on every one.
+- **As-built image (dva24-main):** 0 markers anywhere, but only because writes fail.
+  9 requests returned 500 (PO create x4, PO PATCH, schedule PATCH, WO PATCH
+  add/remove part, WO create).
+
+### R2.4 W2, form redirect in a real browser (headless Chromium, no request rewriting)
+
+On the writable-seed container:
+- the New Work Order submit landed on
+  `http://127.0.0.1:18912/app/work-orders/WO-1165?created=1`;
+- the recorded main-frame navigations contain no `0.0.0.0`;
+- the due-date form also landed on its WO;
+- curl `Location` headers are all relative (`/app/work-orders/WO-1153?created=1`);
+- the error paths are relative too (`/app/work-orders/new?error=Unknown%20technician.`,
+  `...?error=Invalid%20due%20date.`).
+
+**PASS.** On the as-built image the same submit ends on
+`/api/work-orders` with a 500 (B2).
+
+### R2.5 W4, due_date consistency
+
+| due_date | POST | PATCH due |
+|---|---|---|
+| `DVA24M-due` | 422 | 422 |
+| `2026-13-01` | 422 | 422 |
+| `2026-10-01T05:00` | 422 | 422 |
+| `20261001` | 422 | 422 |
+| `1789804800` (string) | 422 | 422 |
+| `2026-02-30` | 200 (rolls to Mar 2) | 200 (same) |
+| `"  "` (spaces) | 200, null | 422 |
+| `""` | 200, null | 200, null |
+
+The fix works as intended. Two small remaining inconsistencies (minor, not
+blocking): both routes accept an overflow date, and they handle a whitespace-only
+value differently. Neither stores text.
+
+### R2.6 Reset, atomicity, race (claim 4) with the chmod 444 seed
+
+- **Interval matrix** (writable-seed containers; inode counted after each of 31
+  samples):
+  - `6h`, `-1`, `""`, `abc`: 1 inode change in total (the boot reset), and the
+    created WO survived 30 of 30 requests.
+  - `1`: 30 changes, and the WO was reset away (30 x 404).
+  - **PASS.**
+- **Race, 30 s:** 20 create-then-PATCH workers plus 10 seed-PATCH workers.
+  - Writable seed at interval `1`: 0 5xx; the 404s are PATCHes on rows already
+    reset away.
+  - Writable seed at interval `50`: 0 5xx.
+  - **As-built at interval `50`:** create 20x500, PATCH 140x500, PO 20x500,
+    schedule 20x500. Logs show 200 x `SqliteError: attempt to write a readonly
+    database`.
+- **Live-DB mode after the boot reset, as built:**
+  - before the first request: `-rw-r--r-- axlepoint.db`;
+  - after it: `-r--r--r-- axlepoint.db`, `-r--r--r-- axlepoint.db-shm`,
+    `-r--r--r-- axlepoint.db-wal`.
+- **ENOSPC** (read-only seed kept, 7.7 MB free):
+  - 24 of 24 failed resets were each logged on **one line**
+    (`[reset] axlepoint seed reset failed: ENOSPC: ...`), with no stack.
+  - Pages and creates all returned 200 (ironically, because the copy never landed
+    and the live DB kept mode 644).
+  - `integrity_check` returned ok, and no temp file was left.
+- **Missing seed:**
+  - exactly 1 `[reset]` line;
+  - the sweep's status codes matched the writable-seed run exactly;
+  - DB `TOTAL_HITS 0`.
+  - **PASS.**
+- **`kill -9` mid-copy, as built, 10 rounds:**
+  - The live DB passed `integrity_check` ok every round, and pages returned 200.
+    Nothing unopenable.
+  - **But** round 2 left a partial, **read-only** `axlepoint.db.reset-tmp`
+    (20,697,088 bytes, `-r--r--r--`). It was never cleaned up: every later round
+    shows the same file.
+  - The log then contains 92 x `EACCES: permission denied, copyfile ... ->
+    axlepoint.db.reset-tmp`.
+  - So one crash mid-copy **permanently disables the reset** until a redeploy.
+    The read-only temp file cannot be overwritten by `copyFileSync`.
+  - This is part of B2.
+
+### R2.7 Regression (claim 6), headless Chromium
+
+- **Writable seed: 20 of 20.**
+  - Recommend Preventive Action on AST-0005 gave "Inspect lube oil system - Engine
+    05 (AST-0005)".
+  - The closed loop worked: assign (Marcus Webb), in_progress, add part, closed.
+  - The form create with TCH-02 gave the derived title, the notice, and no typed
+    text.
+  - Reorder PO returned 200. The PO list had 0 free-text inputs.
+  - 6 nav pages returned 200. 0 API 5xx. A fresh visitor saw 0 markers.
+- **As built: 10 of 20.**
+  - Recommend Preventive Action stays on the asset page, with 0 WOs created.
+  - The closed loop cannot start.
+  - The form ends on a 500.
+  - Reorder PO returns 500.
+  - Only the read-only pages pass.
+- W3 (the hydration error #418, already on `main`) was not re-tested. It is out of
+  scope, and the builder deferred it.
+
+### R2.8 Code layer
+
+- `npx vitest run` at `fb2639b`: 10 files, **88 of 88** pass.
+- `npx tsc --noEmit`: exit 0.
+- `next build` succeeded in the image build.
+- `db.test.ts` has no test with a read-only (0444) seed, so B2 is invisible to the
+  suite.
+
+### Round-2 Theater Check
+
+| Builder claimed | Verification found | Verdict |
+|---|---|---|
+| B1: `assigned_to` validated by `getTechnician` in POST and PATCH `assign`, 422 otherwise | All marker and variant values return 422; valid ids and null accepted; 0 markers in the DB, WAL or any page source | CONFIRMED |
+| W1: marker tests on `assigned_to`, seed pre-assigned to prove non-mutation | Present in route.test.ts and the fixtures; 88 of 88 pass | CONFIRMED |
+| W2: relative 303 Location | Relative on the success and error paths; a real headless browser lands on the created WO | CONFIRMED (only reachable with a writable seed; see B2) |
+| W4: POST due_date returns 422 | 422 on every NaN date, matching PATCH | CONFIRMED (minor edge differences above) |
+| Seed DB chmod 444 "hardens" the reset | It makes the live DB read-only after the first reset (every write 500s), and a crash mid-copy leaves a read-only temp file that blocks every later reset | **THEATER / REGRESSION** |
+| A failing reset logs one line | 1 line per failure (ENOSPC, EACCES), no stack | CONFIRMED |
+| D-012 corrected with an addendum | The `assigned_to` correction is accurate; the "hardening" paragraph is wrong (B2) | PARTIAL |
+| 88 tests | 88 of 88 | CONFIRMED |
+
+### Round-2 Blockers
+
+#### B2. The chmod 444 seed makes the live DB read-only: every write 500s in the built image
+
+- **Where:**
+  - `Dockerfile` (`chmod 444 /app/data/axlepoint.seed.db`);
+  - combined with `src/lib/db.ts` `resetDbIfDue` (`copyFileSync` preserves the
+    mode, and the temp file is never chmodded or removed before the copy).
+- **Impact:**
+  - on every container start, the first `getDb()` call turns the live DB read-only;
+  - every write route returns 500 (`SQLITE_READONLY`) for the life of the container;
+  - Recommend Preventive Action, New Work Order, the closed loop, POs and schedule
+    drag are all broken;
+  - separately, a crash mid-copy leaves a read-only `.reset-tmp` that makes every
+    later reset fail with EACCES until a redeploy.
+- **Fix, either option:**
+  - (a) In `resetDbIfDue`: remove any stale temp file first
+    (`fs.rmSync(tmp, { force: true })`), copy, then `fs.chmodSync(tmp, 0o644)`
+    before the rename.
+  - (b) Drop the Dockerfile chmod. The seed is already never written by code.
+  - Then add a `db.test.ts` case with a 0o444 seed. It should assert that the live
+    DB accepts a write after a reset, and that a stale read-only temp file does not
+    block the next reset. Note that POSIX modes are only meaningful on Linux or CI,
+    not on Windows.
+  - Fix the D-012 hardening paragraph.
+- **Agent tier:**
+  - Sonnet can make the code change (about 5 lines plus a test).
+  - It needs another deep verify (Opus) against a built image, not just unit tests:
+    this bug exists only in the container.
+  - Drew merges (Tier-3).
+
+### Round-2 Warnings
+
+- **W3 (already on main):** the hydration error #418 on `/app/work-orders` is
+  still open. The builder deferred it. Sonnet, not Tier-3.
+- **W5 (minor):** `due_date` edge differences between POST and PATCH: POST accepts
+  a whitespace-only value, and both routes accept an overflow date such as
+  `2026-02-30`. Using `isValidIsoDate` in both would align them. Sonnet.
+- **Process:** B2 passed 88 unit tests and a clean build. Container-level changes
+  (the Dockerfile) need a runtime check before anyone claims done.
+
+### Round-2 coverage gaps
+
+- No headed Chrome (dispatch rule). No axe, visual regression, or deployed-host
+  latency.
+- The workaround container (`chmod 644` at start) is a test device. Those results
+  show what the code does once B2 is fixed, not what the as-built image does.
+- The throwaway harness (`dva24r2-headless.mjs`) was deleted after the run. Its
+  results are transcribed above. Scratch evidence is in the same scratchpad
+  `dv24\` folder (`r2_attack_*.txt`, `race_*`, `r2_*`).
+
+---
+
+# Round 1 (history): tested 4bbb480f1b94f9f0c4c45ecb80c5a4e797b2855b, Overall: FAIL
 
 Independent deep verify of `Ginkobaloba/demo-axlepoint` PR #24 (branch
 `fix/no-persist-visitor-text`), run against a production image built from the PR
