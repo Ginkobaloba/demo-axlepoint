@@ -457,3 +457,16 @@ rejecting it -- neither route's NaN check catches that. Both now go
 through isValidIsoDate (src/lib/schedule-view.ts, already used by the
 schedule board), which does a round-trip check that rejects overflow,
 and both trim first so whitespace-only means "clear" in both places.
+
+## D-013: Node 22 base image (2026-09-19)
+
+Node 20 is EOL; team standard is Node 22. All three Dockerfile stages
+moved from node:20-bookworm-slim to node:22-bookworm-slim. The apt-get
+install of python3/make/g++ (previously needed so better-sqlite3 could
+compile from source via node-gyp) was removed: better-sqlite3@12.10.0
+ships a prebuilt binary for node 22 linux-x64 (NODE_MODULE_VERSION 127),
+confirmed by a clean `docker build` with the toolchain absent and a
+throwaway container serving 200 on `/`. Tradeoff: without the toolchain,
+a transient failure to fetch the prebuild (prebuild-install) has no
+source-compile fallback and fails the build outright instead of
+compiling; re-add the apt step if that becomes a recurring problem.
