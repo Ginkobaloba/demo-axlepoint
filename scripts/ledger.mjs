@@ -32,7 +32,7 @@ export const LEDGER_DIR = join(ROOT, "docs", "ledger");
 export const FIELDS = ["Who", "Change", "Why", "State after", "Refs"];
 export const NAME_RE = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const HEADING_RE = /^# (\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}) ([A-Z]{2,5}) - (\S.*)$/;
-const EM_DASH = "—";
+const EM_DASH = String.fromCharCode(0x2014);
 
 /** Problems with one entry; empty array means valid. */
 export function checkEntry(name, text) {

@@ -34,7 +34,7 @@ describe("checkEntry", () => {
   });
 
   it("rejects em dashes", () => {
-    expect(checkEntry(GOOD_NAME, good() + "a — b\n").join()).toMatch(/em dash/);
+    expect(checkEntry(GOOD_NAME, good() + `a ${String.fromCharCode(0x2014)} b\n`).join()).toMatch(/em dash/);
   });
 });
 
