@@ -29,6 +29,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check ledger
+        run: npm run ledger:check
+
       - name: Test the deep-verify gate (offline)
         run: bash verify/ci/test_deep_gate.sh
 
