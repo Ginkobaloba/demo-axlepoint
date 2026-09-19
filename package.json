@@ -2,6 +2,9 @@
   "name": "demo-axlepoint",
   "version": "0.1.0",
   "private": true,
+  "overrides": {
+    "postcss": "$postcss"
+  },
   "scripts": {
     "dev": "next dev",
     "db:generate": "tsx scripts/generate-db.ts",
@@ -29,13 +32,13 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
-    "@vitest/coverage-v8": "^4.1.9",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^10",
     "eslint-config-next": "16.2.10",
-    "postcss": "^8",
+    "postcss": "^8.5.28",
     "tailwindcss": "^3.4.1",
     "tsx": "^4.22.4",
     "typescript": "^5",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.11"
   }
 }
