@@ -51,3 +51,32 @@ that touches a surface marked `tier: 3` in `tier_map.yml`.
 
 All `<ALL_CAPS>` values in these files are project-specific and must be
 replaced before the verify suite is meaningful. Search for `<` to find them.
+
+## Deep-verify reports and the tier-3 gate
+
+A PR labeled `tier-3` merges only with a committed deep-verify report for THAT PR,
+covering THAT code. `verify/ci/deep_gate.sh <pr-number> <head-sha>` (run by the
+Deep Verify job) accepts a report only if all of these hold:
+
+- the file is `verify/reports/DEEP_VERIFY_<YYYY-MM-DD>_pr<N>-<slug>.md`, where
+  `<N>` is this PR's number (`pr3` never matches `pr30`);
+- it has the line `Overall: PASS` and no `Overall: FAIL`;
+- it has the line `Tested-SHA: <full 40-hex sha>`, naming the commit the run
+  built and tested;
+- that commit is the PR head or an ancestor of it, and every change from it to
+  the head is under `verify/reports/`.
+
+Commit the report as a child of the tested commit. If the code changes after
+the run, the report no longer counts and the deep run has to be repeated. The
+gate's own tests are `verify/ci/test_deep_gate.sh` (run in Quick Verify).
+
+If the PR is updated from main after the run (for example "Update branch", or
+a required up-to-date check), the merge brings in files outside
+`verify/reports/` and the old Tested-SHA stops counting. Then:
+
+1. update the PR from main, which creates merge commit M;
+2. confirm no app code came in:
+   `git diff --name-only <old Tested-SHA> M -- . ':(exclude)verify/' ':(exclude).github/'`
+   must print nothing (if it prints files, re-run the deep verify);
+3. add one report-only commit that sets `Tested-SHA:` to the full sha of M;
+4. merge.

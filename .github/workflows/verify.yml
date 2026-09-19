@@ -29,6 +29,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Test the deep-verify gate (offline)
+        run: bash verify/ci/test_deep_gate.sh
+
       - name: Install yq
         run: |
           sudo wget -qO /usr/local/bin/yq \
@@ -46,6 +49,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Require committed local deep-verify report
-        run: bash verify/ci/deep_gate.sh
+      # The report must name THIS PR (pr<N> in the file name) and record the
+      # commit it tested (Tested-SHA), and nothing but reports may have changed
+      # since that commit. A PASS report from another PR no longer counts.
+      - name: Require a committed deep-verify report for this PR and this code
+        run: >-
+          bash verify/ci/deep_gate.sh
+          "${{ github.event.pull_request.number }}"
+          "${{ github.event.pull_request.head.sha }}"
