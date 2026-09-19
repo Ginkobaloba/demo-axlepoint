@@ -6,23 +6,33 @@
 # the container layer; the app itself resets them back to the seed
 # snapshot on a schedule (src/lib/db.ts, decisions D-012), and a redeploy
 # resets them too by replacing the whole image.
+#
+# Node 22 (node 20 is EOL, team standard is node 22; see
+# docs/demos/axlepoint/decisions.md).
 
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-# better-sqlite3 compiles from source via node-gyp on this base image.
+# better-sqlite3@12.10.0 ships a prebuilt binary for node 22 linux-x64
+# (ABI 127), so this normally installs from the prebuild, not a compile.
+# The toolchain stays anyway as a fallback: a docker build with it removed
+# hit a prebuild-install network timeout once (2026-09-19, observed on the
+# lumen-analytics sibling repo during this same change) with nothing to
+# fall back to, and failed outright. Kept here, in the build stage only,
+# so a flaky prebuild download degrades to a slower compile instead of a
+# hard build failure.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
 RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci
 
-FROM node:20-bookworm-slim AS build
+FROM node:22-bookworm-slim AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run db:generate && npm run build
 
-FROM node:20-bookworm-slim AS run
+FROM node:22-bookworm-slim AS run
 WORKDIR /app
 ENV NODE_ENV=production \
     PORT=3000 \
