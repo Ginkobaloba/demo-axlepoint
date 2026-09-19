@@ -536,11 +536,12 @@ token, an alg-none token, and a token missing the sub claim; a demo
 cookie set to any value still passes, by design; a hand-signed and a
 mintPortalSession-minted valid portal session both pass; a bad portal
 cookie alongside a valid demo cookie still passes but clears the bad
-cookie; fail-closed when the secret is missing or short). Full suite 114
-passed, 2 pre-existing skipped (up from 104 passed before this PR); tsc,
-lint, and build all green, including a clean production build of the
-Edge middleware bundle (40.1 kB, no Edge-runtime warnings from the jose
-subpath imports).
+cookie; fail-closed when the secret is missing or short). Full suite 111
+passed, 2 pre-existing skipped (up from 101 passed on the rebased base,
+this branch's 10 new tests, after rebasing onto origin/main's #31
+ledger-check fix); tsc, lint, and build all green, including a clean
+production build of the Edge middleware bundle (40.1 kB, no Edge-runtime
+warnings from the jose subpath imports).
 
 Mutation check: reverted src/middleware.ts to the pristine
 presence-only check from origin/main and reran src/middleware.test.ts;
