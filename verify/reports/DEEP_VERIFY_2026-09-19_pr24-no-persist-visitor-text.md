@@ -1,9 +1,264 @@
 # Deep Verify: PR #24 stop persisting visitor-typed work-order text (2026-09-19)
 
-Overall: FAIL
-Tested-SHA: fb2639bfa515657a88cf194868d021d7c0c9dd99
+Overall: PASS
+Tested-SHA: 1441b5996acafd3cd271292dc81a32cd61b541c8
 
-## Re-verify (round 2): fb2639b, Overall: FAIL
+## Re-verify (round 3): 1441b59, round-3 result PASS
+
+This is a re-verify of `1441b5996acafd3cd271292dc81a32cd61b541c8`, the builder's
+round-3 fix on top of `fb2639b`. (`78419dc`, the round-2 report, sits between them.)
+
+I built one production image fresh (`docker build --no-cache`, `demo-axlepoint:dv24`,
+`sha256:b2f09e253e0a...`) with the BuildKit npmrc secret pattern. The temporary
+npmrc was deleted and its absence confirmed. The image has
+`data/axlepoint.seed.db` at `-r--r--r--` and `data/axlepoint.db` at `-rw-r--r--`.
+
+**Every container ran the image as built, with the 0444 seed.** There was no 644
+workaround this round. The only entrypoint overrides were test setup: a tmpfs copy
+(`cp -p`, which keeps the 0444 mode) for the disk-full test, and a removed seed for
+the missing-seed test.
+
+All `dva24-*` containers, the image, and a temporary build-stage image were removed
+at the end. The live container was untouched.
+
+**Round-3 result: PASS.** Every round-3 claim held with runtime evidence on the built image.
+The earlier claims re-held too.
+
+Totals:
+- **B2 scenario:** 12 rounds x 7 writes at interval 1, 84 of 84 returned 200. After
+  every reset the live db, `-wal` and `-shm` were `-rw-r--r--` and the seed stayed
+  `-r--r--r--`.
+- **Kill and stale temp file:** 12 random `kill -9` rounds plus 3 planted stale
+  read-only temp files. 15 of 15 recovered, 0 `[reset]` errors, no EACCES.
+- **Marker sweep:** 83 requests plus 9 valid creates plus 7 `assigned_to` variants.
+  0 5xx. 0 markers in the DB, WAL, HTML or RSC.
+- **W5:** 16 due_date values x 3 paths, consistent.
+- **Headless regression:** 20 of 20.
+- **Race:** 0 5xx.
+- **Disk full:** 36 failures, each on 1 line, and requests stayed 200.
+- **Missing seed:** 1 log line.
+- **Interval matrix:** 5 of 5.
+- **Unit tests:** 95 of 95, including the 2 POSIX-only tests, which I ran inside the
+  Linux build stage as the unprivileged `node` user. `tsc` clean.
+
+### R3.1 Diff review, fb2639b to 1441b59
+
+`git diff fb2639b 1441b59` changes 8 files: db.ts, wo-actions.ts, the work-orders
+POST route, 3 test files, decisions.md, plus the round-2 report.
+
+- **`src/lib/db.ts`:** `fs.rmSync(tmp, { force: true })` runs before the copy, and
+  `fs.chmodSync(tmp, 0o644)` runs after the copy and before the rename. This is
+  correct:
+  - unlinking depends on write permission on the directory, which `node` owns, so a
+    read-only leftover is removed;
+  - the live file gets a writable mode before it becomes live;
+  - the sidecars are never copied.
+
+  The try/catch still wraps everything, with one-line logging.
+- **`src/lib/wo-actions.ts`:**
+  - `due` trims a string input. Empty means null.
+  - Otherwise the input must pass `isValidIsoDate`, which checks the regex and a
+    round trip.
+  - The numeric epoch path is unchanged.
+- **`src/app/api/work-orders/route.ts`:** POST now uses the same `isValidIsoDate`
+  after trimming.
+- **decisions.md:** the round-3 addendum accurately describes B2, both failure modes
+  and the fix. It correctly calls its own container check "a smoke check, not a
+  repeat of the deep-verify report's full matrix". The round-2 "hardening" paragraph
+  is now annotated as defective. Accurate.
+- **Tests:**
+  - `db.test.ts` adds 2 `it.skipIf(!isPosix)` cases: a 0o444 seed leaves the live DB
+    writable, and a stale read-only temp file does not block the next reset.
+  - `wo-actions.test.ts` and `route.test.ts` add due-date cases.
+  - 93 pass and 2 are skipped on Windows. All **95 pass on Linux** (below).
+- **Nothing else changed.** The Dockerfile keeps `chmod 444` on the seed.
+
+### R3.2 B2 scenario on the built image (claim 1)
+
+**Interval 1: a reset before every request.**
+- Per round: WO create (`assigned_to` TCH-01), seed WO status, seed WO add_part, PO
+  create, PO PATCH, schedule PATCH, seed WO assign.
+- Result: **12 of 12 rounds, all 7 writes 200 (84 of 84).**
+- Modes after every round: `axlepoint.db`, `-wal` and `-shm` all `-rw-r--r--`;
+  `axlepoint.seed.db` `-r--r--r--`.
+- 0 error lines in the log.
+- **Resets were confirmed as actually running:**
+  - 5 creates in a row each came back as `WO-1151`, and a GET on the created row
+    returned 404;
+  - the DB mtime changed on each;
+  - the inode alternated 4190/4191 because overlayfs reuses inode numbers, so inodes
+    are not a reliable copy counter here; mtime and row survival are;
+  - control: the same create on a 6h container returned 200 on GET.
+- **Visitor-row closed loop at interval 1 is not meaningful**, since every PATCH hits
+  a row the reset has already removed (404 by design). The closed loop was exercised
+  on seed WO-1001 at interval 1 (status, add_part, assign: all 200). At the default
+  interval it was exercised end to end in headless (R3.6).
+
+### R3.3 Crash leftovers (claim 2)
+
+- **12 random `kill -9` rounds** at 0.2 to 1.5 s into a stream of creates, at
+  interval 1:
+  - every restart: live DB `integrity_check` ok, next create 200, next page 200;
+  - modes stayed writable;
+  - **0 `[reset]` error lines**.
+  - None of the 12 kills happened to land between the copy and the rename (no temp
+    file was listed at restart). So I also forced that state directly:
+- **3 planted crash leftovers.** Each time I:
+  1. created a partial (20,697,088-byte) `axlepoint.db.reset-tmp` and chmodded it
+     444, which is exactly the round-2 failure state;
+  2. ran `kill -9`, then restarted;
+  3. sent the first request.
+
+  Result, 3 of 3:
+  - create 200 and PATCH 200;
+  - the temp file was gone, and the live DB was `-rw-r--r--`;
+  - 0 `[reset]` errors;
+  - a follow-up create-then-GET returned 404, proving resets keep running.
+
+  **No EACCES loop.**
+
+### R3.4 Marker sweep (claim 3), as built
+
+- The round-1/2 matrix (83 requests: 8 routes, 5 methods, JSON, multipart and
+  urlencoded, every field including `assigned_to`):
+  - status codes 11x200, 7x303, 8x400, 1x401, 2x404, 32x405, 22x422, **0 5xx**;
+  - identical line by line to the round-2 writable-seed run.
+- 9 valid creates carrying markers in every non-validated field (4 types JSON with
+  `" TCH-01 "`, 4 types form with `TCH-02`, 1 urlencoded with an empty
+  assignee): all succeeded. The form Locations are relative.
+- `assigned_to` PATCH variants: `"TCH-01 DVA24M-x"`, `"tch-01"`, `"TCH-01%"`, a
+  SQL-quote payload, a marker, a number, an object. All returned 422.
+- **Raw DB**, every column of all 12 tables: `TOTAL_HITS 0`. `grep -c DVA24M` on the
+  db, shm, WAL and seed files: 0, 0, 0, 0.
+- Stored `assigned_to` values: {null x3, TCH-01 x4, TCH-02 x4}.
+- **Fresh client** (new cookie jar), HTML and `RSC: 1` on 16 URLs: 0 markers
+  everywhere.
+- **Missing seed** (seed removed, interval 1): the sweep's status codes were
+  identical, exactly 1 `[reset]` line, DB `TOTAL_HITS 0`.
+
+### R3.5 W5, due_date in both routes (claim 4)
+
+| due_date | POST JSON | POST form | PATCH `due` |
+|---|---|---|---|
+| `DVA24M-due` | 422 | redirect `?error=Invalid due date.` | 422 |
+| `2026-02-30` (overflow) | 422 | error | 422 |
+| `2026-02-29` (non-leap) | 422 | error | 422 |
+| `2028-02-29` (leap) | 200 | WO | 200 |
+| `2026-04-31` | 422 | error | 422 |
+| `2026-13-01`, `2026-00-10`, `0000-00-00` | 422 | error | 422 |
+| `2026-10-01T05:00`, `20261001`, `2026-1-5`, `+02026-10-01` | 422 | error | 422 |
+| `1789804800` (string) | 422 | error | 422 |
+| `" 2026-10-01 "` (padded) | 200 | WO | 200 |
+| `"  "` (whitespace only) | 200, cleared | WO | 200, cleared |
+| `""` | 200, cleared | WO | 200, cleared |
+
+All 16 rows are consistent across the 3 paths. **CONFIRMED.**
+
+The non-string PATCH path is unchanged since `main` and outside the W5 claim.
+- A number (epoch) returns 200 by design.
+- **`true` and `[]` also return 200 and store `due_at` 1 and 0 (1970).** It is
+  numeric, stores no text and is not a privacy issue. See W6.
+
+### R3.6 Regression (claim 6), headless Chromium, fresh as-built container
+
+**20 of 20:**
+- sign-in;
+- Recommend Preventive Action on AST-0005 gave "Inspect lube oil system - Engine 05
+  (AST-0005)";
+- the closed loop: assign (Marcus Webb), in_progress, add part, closed;
+- New Work Order with TCH-02 lands on `http://127.0.0.1:18914/app/work-orders/WO-1152?created=1`
+  with no `0.0.0.0` in the main-frame navigations;
+- derived title, fixed notice, no typed text;
+- TCH-02 selected;
+- the due-date form lands on its WO;
+- reorder PO returned 200;
+- PO list, 0 PO free-text inputs;
+- 6 nav pages returned 200;
+- 0 API 5xx;
+- a fresh mobile visitor saw 0 markers in the list source.
+
+After the run the live DB, `-wal` and `-shm` were `-rw-r--r--`, and the seed was
+`-r--r--r--`.
+
+### R3.7 Race, disk full, interval matrix
+
+- **Race**, 30 s, 20 create/PATCH workers plus 10 seed-PATCH workers:
+  - Interval 1: create 20x200, page 20x200, PO 20x200, schedule 20x200, seed PATCH
+    72x200, visitor-row PATCH 100x404 (the row had already been reset away).
+  - Interval 50: create 40x200, PO 40x200, schedule 40x200, seed PATCH 80x200,
+    visitor PATCH 200x404.
+  - **0 5xx**, and 0 error, readonly or EACCES log lines.
+  - All modes writable afterwards, and the seed stayed 0444.
+- **Disk full**:
+  - Setup: 0444 seed plus live DB on a 90 MB tmpfs (7.7 MB free), interval 1.
+  - 36 of 36 failed resets were each logged on one line
+    (`[reset] axlepoint seed reset failed: ENOSPC: ...`), with 0 stack lines.
+  - Page, create and seed PATCH were all 200, 6 of 6 rounds.
+  - `integrity_check` ok, and no temp file was left behind.
+- **Interval matrix**, 30 GETs on a created WO each:
+  - `6h`, `-1`, `""`, `abc`: 30x200, DB mtime unchanged, so no reset after the
+    boot reset;
+  - `1`: 30x404, mtime changed;
+  - the live mode stayed `-rw-r--r--` in all 5.
+
+### R3.8 Code layer
+
+- Windows host: `npx vitest run` gave 93 passed and 2 skipped (95). `npx tsc
+  --noEmit` exited 0.
+- **Linux**:
+  - Setup: `docker build --target build` of the same commit (the build stage, with
+    dev dependencies), then `npx vitest run` as the unprivileged `node` user. Root
+    would bypass file modes, so this matters.
+  - Result: **95 of 95 passed.** That includes both POSIX-only B2 tests:
+    - "a 0o444 seed still leaves the live database writable after a reset";
+    - "a stale read-only leftover temp file does not block the next reset".
+- CI does not run the unit tests. `verify.yml` runs only the quick smoke and the deep
+  gate, so these two tests are only exercised when someone runs them on Linux.
+
+### Round-3 Theater Check
+
+| Builder claimed | Verification found | Verdict |
+|---|---|---|
+| B2: `rmSync(tmp)`, copy, `chmodSync(tmp, 0o644)`, rename; the seed stays 0444 | The built image at interval 1 had 84 of 84 writes 200; live DB, WAL and shm `-rw-r--r--` after every reset; seed `-r--r--r--` | CONFIRMED |
+| A stale read-only temp file no longer blocks resets | 3 of 3 planted 0444 partial temp files cleared on the next reset, writes 200, 0 errors; 12 random `kill -9` rounds clean | CONFIRMED |
+| W5: both routes use `isValidIsoDate`; whitespace-only clears; overflow returns 422 | 16 values x 3 paths consistent | CONFIRMED |
+| D-012 round-3 addendum | Accurate, including its own "smoke check only" caveat | CONFIRMED |
+| 95 tests (2 POSIX-only) | 93 + 2 skipped on win32; 95 of 95 on Linux as a non-root user | CONFIRMED |
+| (Earlier) no visitor free text is persisted, `assigned_to` included | 0 markers in the DB, WAL, HTML or RSC on the as-built image | CONFIRMED (re-held) |
+| (Earlier) W2 relative redirect, W4 due 422, one-line reset log, missing-seed single log line | All re-held on the as-built image | CONFIRMED (re-held) |
+
+### Round-3 Blockers
+
+None.
+
+### Round-3 Warnings (non-blocking)
+
+- **W3 (already on `main`, carried over):** the React hydration error #418 on
+  `/app/work-orders`. Not re-tested this round. Fix in a follow-up. Tier: Sonnet
+  executor, not Tier-3.
+- **W6 (minor, already on `main`, outside W5's scope):** PATCH `due` accepts
+  non-string, non-number JSON (`true`, `[]`) through `Number()`. It stores a 1970
+  `due_at` and returns 200. POST rejects the same input. Fix: accept only
+  `typeof === "number"` or a string in `parseWorkOrderPatch`. Tier: Sonnet.
+- **W7 (process):** the POSIX-only B2 tests only run on Linux, and CI runs no unit
+  tests. Fix: add a `vitest run` step to `.github/workflows/verify.yml`, which runs
+  on ubuntu, so the B2 regression tests actually gate. Tier: Sonnet, with a
+  workflow change Drew should see.
+
+### Round-3 coverage gaps
+
+- No headed Chrome (dispatch rule).
+- No axe or visual regression.
+- Latency was measured on local Docker only.
+- None of the 12 random kills landed between the copy and the rename. That state
+  was forced deterministically instead (R3.3).
+- The throwaway harness (`dva24r3-headless.mjs`) was deleted after the run; results
+  are transcribed above. Scratch evidence: `scratchpad\dv24\r3_attack*.txt`,
+  `race_*`, `r2_1891*`.
+
+---
+
+## Re-verify (round 2, history): fb2639bfa515657a88cf194868d021d7c0c9dd99, round-2 verdict FAIL
 
 This is a re-verify of `fb2639bfa515657a88cf194868d021d7c0c9dd99`, the builder's fix
 commit on top of the round-1 tested commit `4bbb480`. (`684b54b`, the round-1
@@ -13,7 +268,7 @@ secret pattern. The temporary npmrc was deleted and its absence confirmed. Every
 `dva24-*` container and the image were removed at the end. The live container was
 untouched.
 
-**Verdict: FAIL, one new blocker (B2), introduced by the fix commit.** The
+**Round-2 result (history): FAIL, one new blocker (B2), introduced by the fix commit.** The
 privacy fix itself is now complete, and so are W2 and W4. But the new
 `chmod 444 /app/data/axlepoint.seed.db` in the Dockerfile breaks the image:
 - `fs.copyFileSync` copies the source file's permission bits;
@@ -278,13 +533,13 @@ value differently. Neither stores text.
 
 ---
 
-# Round 1 (history): tested 4bbb480f1b94f9f0c4c45ecb80c5a4e797b2855b, Overall: FAIL
+# Round 1 (history): tested 4bbb480f1b94f9f0c4c45ecb80c5a4e797b2855b, round-1 verdict FAIL
 
 Independent deep verify of `Ginkobaloba/demo-axlepoint` PR #24 (branch
 `fix/no-persist-visitor-text`), run against a production image built from the PR
 head. The verifier did not write the PR.
 
-**Verdict: FAIL, one blocker.** What the PR changed works as described:
+**Round-1 result (history): FAIL, one blocker.** What the PR changed works as described:
 - title and description are never stored;
 - the predictive flow is derived on the server;
 - POs carry no visitor text;
