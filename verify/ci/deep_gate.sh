@@ -42,11 +42,17 @@ fi
 for r in "${reports[@]}"; do
   echo "Checking $r"
   body="$(git show "$head:$r")"
+  # The FIRST "Overall:" line is the verdict. A PASS quoted further down (in
+  # a warning or a log excerpt) must not count.
+  verdict="$(grep -iE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?' <<<"$body" | head -n1)"
+  if [ -z "$verdict" ]; then
+    echo "  no 'Overall:' verdict line"; continue
+  fi
   if grep -qiE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?[[:space:]]*(\*\*)?fail' <<<"$body"; then
     echo "  report says Overall: FAIL"; continue
   fi
-  if ! grep -qiE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?[[:space:]]*(\*\*)?pass' <<<"$body"; then
-    echo "  no 'Overall: PASS' line"; continue
+  if ! grep -qiE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?[[:space:]]*(\*\*)?pass([^a-z]|$)' <<<"$verdict"; then
+    echo "  first verdict line is not PASS: $verdict"; continue
   fi
   verified="$(grep -oiE '^[[:space:]]*(\*\*)?tested-sha:?(\*\*)?:?[[:space:]]*`?[0-9a-f]{40}' <<<"$body" \
     | head -n1 | grep -oiE '[0-9a-f]{40}$' | tr 'A-F' 'a-f')"

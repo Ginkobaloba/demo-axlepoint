@@ -87,6 +87,16 @@ new_repo c7b; tested=$(git rev-parse HEAD)
 report DEEP_VERIFY_2026-09-19_pr30-x.md "PENDING" "$tested"; commit_all r
 expect fail "no PASS verdict" 30
 
+# 7c. A PASS quoted below a non-PASS verdict must not count (seen on lumen #35,
+#     where a FAIL-bound report quoted the marker inside a warning).
+new_repo c7c; tested=$(git rev-parse HEAD)
+printf '# Deep Verify\n\nOverall: PENDING\nTested-SHA: %s\n\nWarning: the old gate matched "\nOverall: PASS" anywhere.\n' "$tested" > verify/reports/DEEP_VERIFY_2026-09-19_pr30-x.md
+commit_all r
+expect fail "PASS quoted below the real verdict does not count" 30
+new_repo c7d; tested=$(git rev-parse HEAD)
+report DEEP_VERIFY_2026-09-19_pr30-x.md "PASSED-ISH" "$tested"; commit_all r
+expect fail "verdict must be exactly PASS, not a longer word" 30
+
 # 8. Missing or short Tested-SHA.
 new_repo c8; report DEEP_VERIFY_2026-09-19_pr30-x.md PASS ""; commit_all r
 expect fail "missing Tested-SHA" 30
