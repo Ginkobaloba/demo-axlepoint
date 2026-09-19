@@ -74,37 +74,46 @@ export function parseWorkOrderPatch(raw: unknown): ParseResult {
       };
     }
     case "due": {
-      // Accept an ISO date string (YYYY-MM-DD), an epoch-seconds number, or
-      // null/empty/whitespace-only to clear the due date. Deep-verify PR #24
-      // warning W5: this used to check `=== ""` without trimming, so a
-      // whitespace-only string fell through to the Date() branch and 422'd
-      // while POST /api/work-orders trimmed first and treated the same
-      // input as a clear -- inconsistent for identical intent. Both now
-      // trim first. Shape and calendar validity both go through
-      // isValidIsoDate (schedule-view.ts), the same helper the schedule
-      // board already uses, so an overflow date like 2026-02-30 (which
-      // Date() silently rolls to March 2) is rejected here too, not just
-      // shape-checked.
+      // Accept an ISO date string (YYYY-MM-DD) or null/empty/whitespace-only
+      // to clear the due date. Everything else is rejected with 422. Deep-
+      // verify PR #24 warning W5: this used to check `=== ""` without
+      // trimming, so a whitespace-only string fell through to the Date()
+      // branch and 422'd while POST /api/work-orders trimmed first and
+      // treated the same input as a clear -- inconsistent for identical
+      // intent. Both now trim first. Shape and calendar validity both go
+      // through isValidIsoDate (schedule-view.ts), the same helper the
+      // schedule board already uses, so an overflow date like 2026-02-30
+      // (which Date() silently rolls to March 2) is rejected here too, not
+      // just shape-checked.
+      //
+      // W6: a non-string, non-null due_date (for example `true` or `[]`)
+      // used to fall through to asInt()'s `Number(value)` coercion, which
+      // silently accepted it as an epoch-seconds timestamp --
+      // Number(true) === 1 and Number([]) === 0, both storing a 1970 date,
+      // while POST rejected `true` the same shape produced (asInt is never
+      // called there). There is no legitimate caller that sends a numeric
+      // due_date (the only caller is the date picker, which sends a string
+      // or null), so the epoch-seconds branch is removed rather than
+      // hardened: anything that is not null and not a string is now a 422,
+      // matching POST's stricter posture instead of asInt's permissive one.
       if (body.due_date === null) {
         return { ok: true, action: { kind: "due", due_at: null } };
       }
-      if (typeof body.due_date === "string") {
-        const trimmed = body.due_date.trim();
-        if (trimmed === "") {
-          return { ok: true, action: { kind: "due", due_at: null } };
-        }
-        if (!isValidIsoDate(trimmed)) {
-          return { ok: false, error: "Invalid due date." };
-        }
-        const ms = new Date(`${trimmed}T12:00:00`).getTime();
-        return {
-          ok: true,
-          action: { kind: "due", due_at: Math.floor(ms / 1000) },
-        };
+      if (typeof body.due_date !== "string") {
+        return { ok: false, error: "Invalid due date." };
       }
-      const epoch = asInt(body.due_date);
-      if (epoch === null) return { ok: false, error: "Invalid due date." };
-      return { ok: true, action: { kind: "due", due_at: epoch } };
+      const trimmed = body.due_date.trim();
+      if (trimmed === "") {
+        return { ok: true, action: { kind: "due", due_at: null } };
+      }
+      if (!isValidIsoDate(trimmed)) {
+        return { ok: false, error: "Invalid due date." };
+      }
+      const ms = new Date(`${trimmed}T12:00:00`).getTime();
+      return {
+        ok: true,
+        action: { kind: "due", due_at: Math.floor(ms / 1000) },
+      };
     }
     case "add_part": {
       const partId = String(body.part_id ?? "");

@@ -74,6 +74,27 @@ describe("parseWorkOrderPatch", () => {
     });
   });
 
+  it("W6: non-string due_date is rejected instead of coerced to a number", () => {
+    // Previously fell through to asInt()'s `Number(value)`: Number(true)
+    // === 1 and Number([]) === 0, both silently accepted as epoch seconds
+    // and stored as a 1970 due date, while POST /api/work-orders rejected
+    // `true` the same shape produced. No caller sends a numeric due_date
+    // (the date picker sends a string or null), so every non-string,
+    // non-null value is now a 422, matching POST's stricter posture.
+    expect(parseWorkOrderPatch({ action: "due", due_date: true })).toMatchObject({
+      ok: false,
+    });
+    expect(parseWorkOrderPatch({ action: "due", due_date: [] })).toMatchObject({
+      ok: false,
+    });
+    expect(parseWorkOrderPatch({ action: "due", due_date: 0 })).toMatchObject({
+      ok: false,
+    });
+    expect(parseWorkOrderPatch({ action: "due", due_date: {} })).toMatchObject({
+      ok: false,
+    });
+  });
+
   it("validates add_part qty bounds", () => {
     expect(parseWorkOrderPatch({ action: "add_part", part_id: "PRT-0001", qty: 3 })).toMatchObject({
       ok: true,
