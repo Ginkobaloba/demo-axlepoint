@@ -5,6 +5,7 @@
  * PATCH route.
  */
 import type { WorkOrderStatus } from "./types";
+import { isValidIsoDate } from "./schedule-view";
 
 export const WORK_ORDER_STATUSES: WorkOrderStatus[] = [
   "open",
@@ -74,15 +75,28 @@ export function parseWorkOrderPatch(raw: unknown): ParseResult {
     }
     case "due": {
       // Accept an ISO date string (YYYY-MM-DD), an epoch-seconds number, or
-      // null/"" to clear the due date.
-      if (body.due_date === null || body.due_date === "") {
+      // null/empty/whitespace-only to clear the due date. Deep-verify PR #24
+      // warning W5: this used to check `=== ""` without trimming, so a
+      // whitespace-only string fell through to the Date() branch and 422'd
+      // while POST /api/work-orders trimmed first and treated the same
+      // input as a clear -- inconsistent for identical intent. Both now
+      // trim first. Shape and calendar validity both go through
+      // isValidIsoDate (schedule-view.ts), the same helper the schedule
+      // board already uses, so an overflow date like 2026-02-30 (which
+      // Date() silently rolls to March 2) is rejected here too, not just
+      // shape-checked.
+      if (body.due_date === null) {
         return { ok: true, action: { kind: "due", due_at: null } };
       }
       if (typeof body.due_date === "string") {
-        const ms = new Date(`${body.due_date}T12:00:00`).getTime();
-        if (Number.isNaN(ms)) {
+        const trimmed = body.due_date.trim();
+        if (trimmed === "") {
+          return { ok: true, action: { kind: "due", due_at: null } };
+        }
+        if (!isValidIsoDate(trimmed)) {
           return { ok: false, error: "Invalid due date." };
         }
+        const ms = new Date(`${trimmed}T12:00:00`).getTime();
         return {
           ok: true,
           action: { kind: "due", due_at: Math.floor(ms / 1000) },

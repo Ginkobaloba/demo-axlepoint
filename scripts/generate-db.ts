@@ -11,6 +11,14 @@
  * the generation timestamp rounded to the hour.
  *
  * All data is synthetic. Sites, models, suppliers, and people are fictional.
+ *
+ * Also writes axlepoint.seed.db, a byte-identical snapshot of the freshly
+ * generated database. The running app resets the live database back to
+ * this snapshot on a schedule so visitor writes never accumulate (council
+ * item 1.2, docs/demos/axlepoint/decisions.md D-012; see src/lib/db.ts).
+ * Writing it here keeps this script the single source of truth for both
+ * files: a developer running `npm run db:generate` after touching
+ * anomaly.ts/risk.ts gets a matching seed snapshot for free.
  */
 import Database from "better-sqlite3";
 import fs from "fs";
@@ -34,6 +42,7 @@ import {
 
 const OUT_DIR = path.join(process.cwd(), "data");
 const OUT_PATH = path.join(OUT_DIR, "axlepoint.db");
+const SEED_OUT_PATH = path.join(OUT_DIR, "axlepoint.seed.db");
 
 const rng = new Rng(0x41584c45); // "AXLE"
 
@@ -1036,7 +1045,10 @@ const counts = {
 db.pragma("wal_checkpoint(TRUNCATE)");
 db.close();
 
+fs.copyFileSync(OUT_PATH, SEED_OUT_PATH);
+
 console.log("Database generated:", OUT_PATH);
+console.log("Seed snapshot written:", SEED_OUT_PATH);
 console.log(`  assets:        ${counts.assets.c}`);
 console.log(`  readings:      ${counts.readings.c}`);
 console.log(`  anomalies:     ${counts.anomalies.c} (${counts.anomalies7d.c} in last 7d)`);
