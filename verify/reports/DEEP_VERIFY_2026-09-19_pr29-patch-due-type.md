@@ -34,7 +34,7 @@ Totals:
   (string or null) or a bare `null`.
 - **Regression:** 106 of 106 unit tests pass on Linux (including the 2 POSIX-only
   cases that skip on Windows), `tsc --noEmit` exit 0, `eslint .` 0 errors, the
-  work-order closed loop is 6 of 6, and PR #24's no-persist marker sweep still
+  work-order closed loop is 7 of 7, and PR #24's no-persist marker sweep still
   finds 0 markers in the database, the HTML or the RSC payload.
 
 Layer 5 (headed Chrome) was **not run**, by dispatch rule. It is listed as a gap,
@@ -63,9 +63,13 @@ not a pass.
   `2739306` and changes only the Dockerfile and two docs files. Its
   `src/lib/wo-actions.ts` still ends the `due` case with
   `const epoch = asInt(body.due_date); ... return { ok: true, action: { kind:
-  "due", due_at: epoch } }`, which is exactly the pre-fix code. It runs node 20
-  and the fix image runs node 20 as well, so the node version is not a
-  confounder.
+  "due", due_at: epoch } }`, which is exactly the pre-fix code. The control
+  image runs node 22 (v22.23.2, since PR #27 is the node 22 base-image change)
+  and the fix image runs node 20 (v20.20.2). That difference does not confound
+  the comparison: `parseWorkOrderPatch` is pure JavaScript, `Number(true) === 1`
+  and `Number([]) === 0` are ECMAScript semantics rather than runtime behavior,
+  and all 11 non-W6 rows of the matrix produced identical results on both
+  builds. Only the 3 rows the fix targets differ.
 
 ## 2. Results by category
 
