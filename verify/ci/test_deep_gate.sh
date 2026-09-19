@@ -96,6 +96,18 @@ expect fail "PASS quoted below the real verdict does not count" 30
 new_repo c7d; tested=$(git rev-parse HEAD)
 report DEEP_VERIFY_2026-09-19_pr30-x.md "PASSED-ISH" "$tested"; commit_all r
 expect fail "verdict must be exactly PASS, not a longer word" 30
+# 7e. Whole-token only: qualified or decorated PASS verdicts do not count.
+n=0
+for v in "PASS-ISH" "PASS_WITH_ISSUES" "PASS (partial)" "PASS." "PASS with warnings"; do
+  n=$((n + 1)); new_repo "c7e$n"; tested=$(git rev-parse HEAD)
+  report DEEP_VERIFY_2026-09-19_pr30-x.md "$v" "$tested"; commit_all r
+  expect fail "verdict '$v' is not a bare PASS" 30
+done
+# 7f. Bold on the value, and trailing spaces, still count.
+new_repo c7f; tested=$(git rev-parse HEAD)
+printf '# Deep Verify\n\nOverall: **PASS**  \nTested-SHA: %s\n' "$tested" > verify/reports/DEEP_VERIFY_2026-09-19_pr30-x.md
+commit_all r
+expect pass "Overall: **PASS** with trailing spaces" 30
 
 # 8. Missing or short Tested-SHA.
 new_repo c8; report DEEP_VERIFY_2026-09-19_pr30-x.md PASS ""; commit_all r

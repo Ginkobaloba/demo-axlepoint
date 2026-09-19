@@ -51,7 +51,9 @@ for r in "${reports[@]}"; do
   if grep -qiE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?[[:space:]]*(\*\*)?fail' <<<"$body"; then
     echo "  report says Overall: FAIL"; continue
   fi
-  if ! grep -qiE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?[[:space:]]*(\*\*)?pass([^a-z]|$)' <<<"$verdict"; then
+  # Whole token: "Overall: PASS" (markdown bold allowed) and nothing after it.
+  # "PASS-ISH", "PASS_WITH_ISSUES", "PASS (partial)" and "PASS." do not count.
+  if ! grep -qiE '^[[:space:]]*(\*\*)?overall:?(\*\*)?:?[[:space:]]*(\*\*)?pass(\*\*)?[[:space:]]*$' <<<"$verdict"; then
     echo "  first verdict line is not PASS: $verdict"; continue
   fi
   verified="$(grep -oiE '^[[:space:]]*(\*\*)?tested-sha:?(\*\*)?:?[[:space:]]*`?[0-9a-f]{40}' <<<"$body" \
