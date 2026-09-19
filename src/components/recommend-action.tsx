@@ -4,37 +4,17 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import type { RiskFactor } from "@/lib/types";
-
-const ACTION_BY_SENSOR: Record<string, [string, string]> = {
-  vibration: [
-    "Inspect bearings and alignment",
-    "Inspect bearing condition, mounts, and shaft alignment. Collect a full vibration spectrum for analysis before and after any correction.",
-  ],
-  temperature: [
-    "Inspect cooling circuit",
-    "Verify coolant flow and heat exchanger performance, inspect for fouling, and confirm temperature sensor calibration.",
-  ],
-  oil_pressure: [
-    "Inspect lube oil system",
-    "Inspect oil pump output, relief valve, and filter differential pressure. Pull an oil sample for wear metals analysis.",
-  ],
-  cylinder_pressure: [
-    "Inspect cylinder heads and valves",
-    "Check cylinder compression balance, inspect valve seats and rings via borescope, and verify injector timing.",
-  ],
-  fuel_rate: [
-    "Inspect fuel injection system",
-    "Inspect injectors and fuel lines for wear or leakage, verify injection timing, and compare specific fuel consumption against baseline.",
-  ],
-  rpm: [
-    "Inspect governor and speed control",
-    "Verify governor response, actuator linkage, and speed sensor signal quality under load change.",
-  ],
-};
+import { ACTION_BY_SENSOR } from "@/lib/predictive-action";
 
 /**
  * Drafts a predictive work order pre-populated from the asset's current
  * anomaly pattern, then navigates to the draft for review.
+ *
+ * The title/description this button sends are a preview only: POST
+ * /api/work-orders re-derives both from the asset's own risk_factors on
+ * the server (src/lib/predictive-action.ts) and ignores what is submitted
+ * here, same as every other visitor-typed field (D-012). Kept in sync by
+ * sharing the ACTION_BY_SENSOR table rather than duplicating it.
  */
 export function RecommendActionButton({
   assetId,
