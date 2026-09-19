@@ -12,7 +12,8 @@
     "start": "next start",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "ledger:check": "node scripts/ledger.mjs check"
   },
   "dependencies": {
     "@paradigm-codes/auth": "^0.1.0",
