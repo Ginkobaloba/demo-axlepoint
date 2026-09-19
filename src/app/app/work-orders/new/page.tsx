@@ -84,6 +84,9 @@ export default async function NewWorkOrderPage(
             />
             <p className="mt-1 text-xs text-ink-faint">
               Describe the work. Test or placeholder titles are rejected.
+              Demo note: this is a shared demo database, so what you type
+              here is never stored -- the list shows a generated summary
+              instead.
             </p>
           </div>
 
@@ -99,6 +102,10 @@ export default async function NewWorkOrderPage(
               placeholder="Scope, acceptance criteria, safety notes..."
               className="input resize-y"
             />
+            <p className="mt-1 text-xs text-ink-faint">
+              Not stored either -- anything typed here is discarded, not
+              shown to other visitors.
+            </p>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">

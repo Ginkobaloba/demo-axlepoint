@@ -197,3 +197,126 @@ the unit-tested isValidIsoDate in src/lib/schedule-view.ts. HTML5 drag-and-drop
 is used directly (no dnd library) to keep the bundle small. Verified
 in-browser: all four views render; a synthetic drag moved a task to a new day
 and persisted; the API rejects bad dates (422) and unknown tasks (404).
+
+## D-012: Anonymous by design -- visitor free text is never persisted, and the
+shared database resets to seed on a schedule
+
+Council item 1.2 (C:\dev\COUNCIL_COMPLIANCE_2026-09-19.md, section 1.2): the
+demo's build-time SQLite database (D-005) is a singleton shared by every
+visitor through one demo-user cookie (D-006) with no per-visitor concept.
+Before this fix, anything a visitor typed into the "New work order" form or
+the "Recommend Preventive Action" button (title, description) was written
+straight into that shared file and shown to every later visitor until the
+next redeploy.
+
+Audited every visitor-writable surface first: work orders (POST
+/api/work-orders, PATCH /api/work-orders/[id]) and purchase orders (POST
+/api/purchase-orders, PATCH /api/purchase-orders/[id]). Only work_orders.title
+and work_orders.description are visitor free text. Everything else a visitor
+can write is already structured/enum-constrained: assigned_to (technician id,
+a foreign key picklist), status, due_at, work-order part attachments (part id
++ qty), and PO status transitions. purchase_orders.notes exists in the schema
+but is never visitor-supplied -- createReorderPurchaseOrders (queries.ts)
+always writes the fixed string "Auto-drafted from a reorder alert." There is
+no free-text input anywhere in the PO UI. So the fix is scoped to work orders;
+POs needed no code change, just this record of why.
+
+Design choice, from the three candidates the council direction offered
+(client-side-only state, server writes with no free text persisted, or an
+in-memory per-browser-id store): **server writes with no free text
+persisted**, not client-side-only state. AxlePoint's work-order pages are
+server-rendered SQL joins (queries.ts joins work_orders/assets/technicians);
+making the closed-loop workflow (create -> assign -> schedule -> attach
+parts -> close, D-007) client-side-only would mean duplicating that join
+logic in the browser and inventing a client-only detail route -- a
+rearchitecture, not a fix, for a two-column problem. Storing no free text
+keeps every existing page, query, and test working unchanged.
+
+Concretely (src/app/api/work-orders/route.ts, src/lib/work-order-validation.ts):
+screenWorkOrderTitle still validates the shape of what a visitor typed (junk
+titles like "Test" or "JSON API test order" still get rejected with the same
+UX as before, D-006's screen), but the literal string is discarded either
+way. What lands in the title column is deriveWorkOrderTitle(asset.name,
+type) -- "Preventive - Meridian V12T #04" -- built only from the asset and
+type the route already validated as real, structured values. The description
+column gets a fixed, honest placeholder (DISCARDED_DESCRIPTION_NOTICE)
+instead of an empty string, so a reader sees why the field looks blank
+rather than a confusing gap. The New Work Order form keeps both inputs (the
+demo still feels interactive, and the validation still gives real feedback)
+with a short note next to each explaining nothing typed there is stored.
+Seed rows (the original 150 work orders) are untouched -- this only affects
+orders created at runtime.
+
+Second half of the direction: reset the shared database to seed on a
+schedule, so any other kind of drift (not just free text) cannot
+accumulate indefinitely on a long-running container between redeploys.
+scripts/generate-db.ts now writes data/axlepoint.seed.db, a byte-identical
+snapshot, right after generating data/axlepoint.db, so `npm run db:generate`
+stays the single source of truth for both files (regenerating after
+touching anomaly.ts/risk.ts regenerates the seed too, with no separate step
+to remember). src/lib/db.ts's getDb() calls resetDbIfDue() first, mirroring
+how demo-harborbistro's getDb() triggers runRetentionIfDue()
+(src/lib/retention.ts there): the first call after process boot always
+resets (so a long-lived container gets a known-good state promptly, not
+just at the next interval boundary), and after that resetDbIfDue() runs at
+most once per RESET_INTERVAL_MS (default 6 hours, env-overridable). A due
+reset closes the cached connection, deletes the live file's -wal/-shm
+sidecars, copies the seed file over the live path, and lets getDb() reopen
+a fresh connection -- safe only because every function in queries.ts calls
+getDb() and uses the handle synchronously with no await in between; a
+future async query function would need to re-call getDb() after its await
+rather than hold a handle across one. If no seed snapshot exists (an old
+dev checkout, or a test fixture that omits one on purpose) the reset is
+skipped and logged once rather than bootstrapped from the live file --
+bootstrapping would risk freezing a developer's freshly regenerated
+database as "the seed" on the next interval.
+
+Not done, and why: no per-visitor identity was added (candidate (c), an
+in-memory store keyed by a random per-browser id). The direction is
+anonymous by design -- adding a per-visitor id, even ephemeral and
+in-memory, is the kind of identity concept this fix is explicitly removing,
+and it was not needed once the free text itself is never stored.
+
+Headline flow, preserved rather than flattened: "Recommend Preventive
+Action" (D-007) is the one demo flow a prospect is walked through, and a
+first pass of this fix would have reduced its drafted work order to the
+same generic "Predictive - <asset>" title every other type gets, losing
+the sensor-specific recommendation story. src/lib/predictive-action.ts
+(ACTION_BY_SENSOR, deriveRecommendedWorkOrder) derives that title and
+description from the asset's own risk_factors column -- server-computed,
+not visitor input -- the same way recommend-action.tsx already previewed
+it client-side; the route calls it for type "predictive" instead of the
+generic deriveWorkOrderTitle/DISCARDED_DESCRIPTION_NOTICE pair, and
+ignores whatever the button actually submitted, same as every other
+field. recommend-action.tsx now imports ACTION_BY_SENSOR from that shared
+module instead of keeping its own copy, so the client preview and the
+stored result cannot drift apart.
+
+Two hardening items in the reset path, since it runs unattended for
+months at a time: AXLEPOINT_RESET_INTERVAL_MS is parsed through
+parseResetInterval(), which falls back to the 6-hour default on anything
+non-finite or non-positive (an unguarded Number() on a bad override would
+produce NaN, and `nowMs - last < NaN` is always false, so every getDb()
+call would think a reset was due and re-copy the ~40 MB database on every
+request). And the seed-to-live copy lands via a temp file plus
+fs.renameSync rather than copying directly onto DB_PATH, so a failure
+mid-copy cannot leave a truncated, unopenable live database serving 500s
+until the next redeploy.
+
+Verified: src/lib/db.test.ts exercises resetDbIfDue's boot/interval/skip
+behavior directly against temp fixture files (no seed present, has-seed
+reset dropping a synthetic post-snapshot write, throttling to once per
+interval). src/app/api/work-orders/route.test.ts posts distinctive marker
+strings as title and description through both the form and JSON paths and
+asserts, by reading back through the real queries.ts functions (getWorkOrders
+/ getWorkOrder), that the markers never appear anywhere in the database --
+covering "visitor A's text never reaches visitor B or a fresh client" the
+only way that is true here: it never reaches anyone. A dedicated test
+posts the JSON path with marker preview text on a predictive work order
+and asserts the stored title/description match deriveRecommendedWorkOrder's
+output exactly (not the markers), covering the headline-flow fix. Further
+tests cover the create -> read flow and the existing junk-title rejection,
+and drive PATCH /api/work-orders/[id] through assign -> in_progress ->
+closed to confirm the technician-assignment and status-transition path
+(D-007's closed loop) still works end to end -- those PATCH fields are
+already structured (D-012 does not change that route).

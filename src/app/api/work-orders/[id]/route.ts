@@ -14,8 +14,11 @@ import { parseWorkOrderPatch } from "@/lib/wo-actions";
  * Mutates a single work order. Drives the closed-loop demo workflow:
  * after "Recommend Preventive Action" drafts an order, the detail page
  * PATCHes here to assign a technician, set a due date, move status, and
- * attach parts. Writes land in the container SQLite and reset on the next
- * redeploy (decisions D-005), same as createWorkOrder.
+ * attach parts. Every field this route writes (technician id, status,
+ * due date, part id/qty) is structured, not visitor free text, so D-012
+ * does not change this route's persistence. Writes land in the shared
+ * SQLite database and reset on the next scheduled seed reset or redeploy
+ * (decisions D-005, D-012), same as createWorkOrder.
  */
 export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
