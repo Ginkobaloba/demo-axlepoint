@@ -213,13 +213,14 @@ Audited every visitor-writable surface first: work orders (POST
 /api/work-orders, PATCH /api/work-orders/[id]) and purchase orders (POST
 /api/purchase-orders, PATCH /api/purchase-orders/[id]). Only work_orders.title
 and work_orders.description are visitor free text. Everything else a visitor
-can write is already structured/enum-constrained: assigned_to (technician id,
-a foreign key picklist), status, due_at, work-order part attachments (part id
-+ qty), and PO status transitions. purchase_orders.notes exists in the schema
-but is never visitor-supplied -- createReorderPurchaseOrders (queries.ts)
-always writes the fixed string "Auto-drafted from a reorder alert." There is
-no free-text input anywhere in the PO UI. So the fix is scoped to work orders;
-POs needed no code change, just this record of why.
+can write is structured/enum-constrained: status, due_at, work-order part
+attachments (part id + qty), and PO status transitions. assigned_to
+(technician id) is meant to be a foreign-key picklist, but at first pass of
+this fix it was not enforced as one -- see the correction below. purchase_orders.notes
+exists in the schema but is never visitor-supplied -- createReorderPurchaseOrders
+(queries.ts) always writes the fixed string "Auto-drafted from a reorder
+alert." There is no free-text input anywhere in the PO UI. So the fix is
+scoped to work orders; POs needed no code change, just this record of why.
 
 Design choice, from the three candidates the council direction offered
 (client-side-only state, server writes with no free text persisted, or an
@@ -318,5 +319,70 @@ output exactly (not the markers), covering the headline-flow fix. Further
 tests cover the create -> read flow and the existing junk-title rejection,
 and drive PATCH /api/work-orders/[id] through assign -> in_progress ->
 closed to confirm the technician-assignment and status-transition path
-(D-007's closed loop) still works end to end -- those PATCH fields are
-already structured (D-012 does not change that route).
+(D-007's closed loop) still works end to end.
+
+## D-012 addendum (2026-09-19): assigned_to was not actually structured -- deep-verify blocker B1
+
+Independent deep verify of the PR above (verify/reports/DEEP_VERIFY_2026-09-19_pr24-no-persist-visitor-text.md)
+found the claim two sections up -- that assigned_to is "a foreign key
+picklist" -- was false. work_orders.assigned_to is a plain TEXT column
+with no FK and no lookup in either write route. POST /api/work-orders
+(route.ts) stored `String(raw.assigned_to)` unchecked; PATCH's `assign`
+action (wo-actions.ts, parseWorkOrderPatch) parsed the shape but never
+checked existence, and the route wrote it through unvalidated. A marker
+sweep posted arbitrary text in assigned_to through both routes (JSON,
+multipart, and urlencoded bodies; seed rows and new rows) and confirmed
+it landed in the raw database and was then served to a fresh visitor
+(separate cookie jar) inside the RSC flight payload of /app/work-orders
+and every affected work order's detail page -- not rendered as visible
+text (the UI only shows the joined technician_name, which is null for a
+bogus id), but present in the page source every visitor downloads. This
+is exactly the leak class this PR exists to close, in the one field the
+PR vouched for without testing.
+
+Fixed by adding queries.ts's getTechnician(id) and calling it from both
+write paths before the write: POST /api/work-orders rejects an unknown
+assigned_to with 422 ("Unknown technician."), same pattern as the
+existing title/asset/priority/type validation; PATCH's `assign` case in
+[id]/route.ts checks getTechnician(action.assigned_to) the same way
+add_part already checks getPart(action.part_id), also returning 422 on a
+miss. Empty string or absent still clears the field to null in both
+routes -- that behavior was already correct and is unchanged.
+wo-actions.ts's parseWorkOrderPatch (tested in wo-actions.test.ts)
+intentionally stays DB-free (it is unit-tested without a database, per
+its own header comment); the existence check lives in the route layer
+instead, matching how add_part's check already works, not in the parser.
+
+Two more findings from the same deep verify, fixed alongside this since
+they touch the same routes:
+
+- **W2 (pre-existing on main, not introduced by this PR):**
+  POST /api/work-orders built its redirect with `new URL(path,
+  request.url)`, which behind the demo's reverse proxy ships `Location:
+  http://0.0.0.0:3000/...` -- a real browser lands on a dead host after
+  submitting the New Work Order form. api/session/route.ts already
+  documents this exact trap and uses a relative Location; this route now
+  matches it.
+- **W4:** POST accepted an invalid due_date silently (200, due_at stored
+  as NULL) while PATCH's `due` action already returned 422 for the same
+  bad input. POST now parses and rejects the same way PATCH does.
+
+Not fixed here, by the deep-verify report's own tiering (separate
+follow-up, not Tier-3-blocking): W3, a pre-existing React hydration
+error on /app/work-orders unrelated to this diff (work-orders-table.tsx,
+not touched by D-012).
+
+Hardening from the same report, applied here: a failed reset now logs one
+line (`err instanceof Error ? err.message : String(err)`) instead of a
+full stack on every due interval, since a misconfigured short interval
+would otherwise spam the log; and the Dockerfile now chmods
+data/axlepoint.seed.db read-only for the app user after the chown, since
+nothing in the app writes to it and the "seed is pristine" assumption is
+worth enforcing rather than just documenting.
+
+Verified (round 2): src/app/api/work-orders/route.test.ts adds marker
+tests for assigned_to on both POST (JSON and form) and PATCH `assign`
+(seed row and a freshly created row), asserting absence via the same
+queries.ts read-back the title/description tests use, plus 422 coverage
+for an unknown technician id on both routes and for an invalid due_date
+on POST. All existing tests continue to pass.

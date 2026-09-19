@@ -31,7 +31,12 @@ COPY --from=build /app/.next/standalone ./
 COPY --from=build /app/.next/static ./.next/static
 COPY --from=build /app/public ./public
 COPY --from=build /app/data ./data
-RUN chown -R node:node /app/data
+# The seed snapshot is read-only at runtime: nothing in the app writes to
+# it (src/lib/db.ts only ever copies FROM it), and making that structural
+# rather than just documented hardens the "seed is pristine" assumption
+# the reset relies on (deep-verify PR #24, minor finding).
+RUN chown -R node:node /app/data \
+    && chmod 444 /app/data/axlepoint.seed.db
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]

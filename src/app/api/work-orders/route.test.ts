@@ -170,6 +170,179 @@ describe("POST /api/work-orders -- visitor free text is never persisted", () => 
   });
 });
 
+describe("assigned_to must resolve to a real technician (deep-verify PR #24 blocker B1)", () => {
+  it("POST (form): rejects a marker string (relative redirect with the reason) and never stores it", async () => {
+    // Form posts always get the 303 reject path (see the route's reject()
+    // helper) with the reason in the query string, same as the existing
+    // junk-title rejection -- not a raw 422 like the JSON path below.
+    const marker = "B1-MARKER-form-assigned-to-9f21";
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        assigned_to: marker,
+      }),
+    );
+    expect(res.status).toBe(303);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("error=Unknown%20technician.");
+    expect(allStoredText()).not.toContain(marker);
+  });
+
+  it("POST (JSON): rejects a marker string with 422 and never stores it", async () => {
+    const marker = "B1-MARKER-json-assigned-to-4c88";
+    const res = await POST(
+      jsonRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        assigned_to: marker,
+      }),
+    );
+    expect(res.status).toBe(422);
+    expect(allStoredText()).not.toContain(marker);
+  });
+
+  it("POST: empty or absent assigned_to still clears to null (unaffected by the fix)", async () => {
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        assigned_to: "",
+      }),
+    );
+    expect(res.status).toBe(303);
+    const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
+    expect(queries.getWorkOrder(id)?.assigned_to).toBeNull();
+  });
+
+  it("PATCH assign: rejects a marker string on a seed work order with 422 and leaves its real assignment untouched", async () => {
+    // WO-1 seeds with assigned_to = 'TCH-01' (see axlepoint-fixtures.ts) so
+    // this proves the rejected write left the existing value alone, not
+    // just that a marker failed to appear on a column that started empty
+    // -- this is the exact row shape B1 attacked (a pre-existing/seed row).
+    const marker = "B1-MARKER-patch-seed-assign-1a77";
+    const before = queries.getWorkOrder("WO-1")?.assigned_to;
+    expect(before).toBe("TCH-01");
+
+    const res = await PATCH(
+      new NextRequest("http://localhost:3000/api/work-orders/WO-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "assign", assigned_to: marker }),
+      }),
+      { params: Promise.resolve({ id: "WO-1" }) },
+    );
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("Unknown technician.");
+    expect(queries.getWorkOrder("WO-1")?.assigned_to).toBe("TCH-01");
+    expect(allStoredText()).not.toContain(marker);
+  });
+
+  it("PATCH assign: rejects a marker string on a freshly created work order with 422 and never stores it", async () => {
+    const marker = "B1-MARKER-patch-new-assign-6e02";
+    const createRes = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+      }),
+    );
+    const id = (createRes.headers.get("location") ?? "")
+      .match(/work-orders\/(WO-\d+)/)?.[1] as string;
+
+    const res = await PATCH(
+      new NextRequest(`http://localhost:3000/api/work-orders/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "assign", assigned_to: marker }),
+      }),
+      { params: Promise.resolve({ id }) },
+    );
+    expect(res.status).toBe(422);
+    expect(queries.getWorkOrder(id)?.assigned_to).toBeNull();
+    expect(allStoredText()).not.toContain(marker);
+  });
+
+  it("PATCH assign: still accepts a real technician id and still accepts clearing to null", async () => {
+    const assignRes = await PATCH(
+      new NextRequest("http://localhost:3000/api/work-orders/WO-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "assign", assigned_to: "TCH-01" }),
+      }),
+      { params: Promise.resolve({ id: "WO-1" }) },
+    );
+    expect(assignRes.status).toBe(200);
+    expect(queries.getWorkOrder("WO-1")?.assigned_to).toBe("TCH-01");
+
+    const clearRes = await PATCH(
+      new NextRequest("http://localhost:3000/api/work-orders/WO-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "assign", assigned_to: null }),
+      }),
+      { params: Promise.resolve({ id: "WO-1" }) },
+    );
+    expect(clearRes.status).toBe(200);
+    expect(queries.getWorkOrder("WO-1")?.assigned_to).toBeNull();
+  });
+});
+
+describe("POST /api/work-orders -- W2/W4 fixes (deep-verify PR #24)", () => {
+  it("W2: the created-order redirect Location is relative, not built from request.url", async () => {
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+      }),
+    );
+    expect(res.status).toBe(303);
+    const location = res.headers.get("location") ?? "";
+    expect(location.startsWith("/app/work-orders/")).toBe(true);
+    expect(location).not.toContain("0.0.0.0");
+    expect(location).not.toMatch(/^https?:\/\//);
+  });
+
+  it("W4: rejects an unparseable due_date with 422 instead of silently storing NULL", async () => {
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        due_date: "not-a-date",
+      }),
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain("error=");
+  });
+
+  it("W4: still accepts a valid due_date", async () => {
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        due_date: "2027-01-15",
+      }),
+    );
+    expect(res.status).toBe(303);
+    const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
+    expect(queries.getWorkOrder(id)?.due_at).toBeTruthy();
+  });
+});
+
 describe("POST /api/work-orders -- the demo flow still works end to end", () => {
   it("creates a work order visible on the list and detail pages", async () => {
     const res = await POST(

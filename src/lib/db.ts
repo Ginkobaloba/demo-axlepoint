@@ -113,7 +113,12 @@ export function resetDbIfDue(nowMs = Date.now()): boolean {
     fs.renameSync(tmp, DB_PATH);
     return true;
   } catch (err) {
-    console.error("[reset] axlepoint seed reset failed", err);
+    // One line, not a full stack: this runs on every due interval, and a
+    // misconfigured short interval (see AXLEPOINT_RESET_INTERVAL_MS above)
+    // would otherwise spam the log with a repeated stack trace for the
+    // same underlying condition (deep-verify PR #24, minor finding).
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[reset] axlepoint seed reset failed: ${message}`);
     return false;
   }
 }

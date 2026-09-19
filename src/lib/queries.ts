@@ -442,6 +442,19 @@ export interface TechnicianWithLoad extends Technician {
   open_orders: number;
 }
 
+/**
+ * Looks up a single technician by id. Used to validate `assigned_to`
+ * before a write (D-012 follow-up): the column has no FK, so both write
+ * routes call this to reject an unknown id rather than trusting the
+ * caller (deep-verify PR #24 blocker B1 -- arbitrary text in
+ * `assigned_to` was reaching a fresh visitor's page source).
+ */
+export function getTechnician(id: string): Technician | undefined {
+  return getDb().prepare("SELECT * FROM technicians WHERE id = ?").get(id) as
+    | Technician
+    | undefined;
+}
+
 export function getTechnicians(): TechnicianWithLoad[] {
   return getDb()
     .prepare(

@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createWorkOrder, getAsset } from "@/lib/queries";
+import { createWorkOrder, getAsset, getTechnician } from "@/lib/queries";
 import type { WorkOrderPriority, WorkOrderType } from "@/lib/types";
 import {
   DISCARDED_DESCRIPTION_NOTICE,
@@ -53,10 +53,35 @@ export async function POST(request: NextRequest) {
     return reject(422, screen.reason ?? "Invalid title.");
   }
 
+  // assigned_to has no FK (schema: TEXT), so it must be checked here rather
+  // than trusted. Deep-verify PR #24 blocker B1: an unvalidated string here
+  // let arbitrary text reach a fresh visitor's page source through the
+  // work-orders list and detail RSC payload -- the exact leak this PR
+  // exists to close, in a field D-012 wrongly called safe. Empty/absent
+  // clears the field; anything else must be a real technician id.
+  const assignedToRaw =
+    raw.assigned_to !== undefined && raw.assigned_to !== null
+      ? String(raw.assigned_to).trim()
+      : "";
+  let assignedTo: string | null = null;
+  if (assignedToRaw) {
+    if (!getTechnician(assignedToRaw)) {
+      return reject(422, "Unknown technician.");
+    }
+    assignedTo = assignedToRaw;
+  }
+
+  // W4 (deep-verify PR #24): PATCH already 422s on an unparseable due date
+  // (wo-actions.ts); this route silently stored NULL instead. Match PATCH.
   const dueRaw = String(raw.due_date ?? "").trim();
-  const dueAt = dueRaw
-    ? Math.floor(new Date(`${dueRaw}T12:00:00`).getTime() / 1000)
-    : null;
+  let dueAt: number | null = null;
+  if (dueRaw) {
+    const ms = new Date(`${dueRaw}T12:00:00`).getTime();
+    if (Number.isNaN(ms)) {
+      return reject(422, "Invalid due date.");
+    }
+    dueAt = Math.floor(ms / 1000);
+  }
 
   // Anonymous by design (D-012): the visitor's literal title and
   // description are validated above but never persisted. What is stored
@@ -78,13 +103,18 @@ export async function POST(request: NextRequest) {
     description: storedDescription,
     priority: priority as WorkOrderPriority,
     type: type as WorkOrderType,
-    assigned_to: raw.assigned_to ? String(raw.assigned_to) : null,
+    assigned_to: assignedTo,
     due_at: dueAt,
   });
 
-  const target = new URL(`/app/work-orders/${id}?created=1`, request.url);
+  // W2 (deep-verify PR #24, pre-existing on main): building an absolute
+  // URL from request.url ships Location: http://0.0.0.0:3000/... behind
+  // the demo's reverse proxy, so a real browser lands on a dead host after
+  // submitting the form. api/session/route.ts already documents this trap
+  // and uses a relative Location; match it here.
+  const targetPath = `/app/work-orders/${id}?created=1`;
   if (isForm) {
-    return NextResponse.redirect(target, 303);
+    return new NextResponse(null, { status: 303, headers: { Location: targetPath } });
   }
-  return NextResponse.json({ id, url: target.pathname + target.search });
+  return NextResponse.json({ id, url: targetPath });
 }

@@ -100,6 +100,13 @@ function removeSidecars(dbPath: string): void {
  * Creates a fresh fixture database at dbPath with the schema above, one
  * asset, one technician, and one seed work order. Returns nothing; open it
  * with getDb() (env-pointed at dbPath) or a direct better-sqlite3 handle.
+ *
+ * The seed work order is pre-assigned to TCH-01 (not NULL) on purpose:
+ * deep-verify PR #24 blocker B1 attacked a pre-existing row's assigned_to
+ * specifically, and a test that only asserts "the marker didn't land" is
+ * trivially true against a column that started empty. Starting from a
+ * real value lets the B1 regression tests assert the rejected write left
+ * that value untouched, not just that nothing appeared.
  */
 export function seedFixtureDb(dbPath: string): void {
   removeSidecars(dbPath);
@@ -127,7 +134,7 @@ export function seedFixtureDb(dbPath: string): void {
       assigned_to, created_at, due_at, completed_at
     ) VALUES (
       'WO-1', 'AST-01', 'Seeded quarterly inspection', 'Seed description text',
-      'open', 'medium', 'inspection', NULL, 1700000000, NULL, NULL
+      'open', 'medium', 'inspection', 'TCH-01', 1700000000, NULL, NULL
     );
   `);
   db.close();
