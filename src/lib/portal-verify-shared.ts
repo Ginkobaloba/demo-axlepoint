@@ -190,7 +190,6 @@ async function getDocKeys(cfg: VerifierConfig): Promise<Jwk[]> {
         .catch((err: Error) => {
           // Swallow background refresh failures; we still have a stale
           // entry. Surface the error on the next cold fetch.
-          // eslint-disable-next-line no-console
           console.warn(
             "[portal-verify-shared] background JWKS refresh failed:",
             err.message,
