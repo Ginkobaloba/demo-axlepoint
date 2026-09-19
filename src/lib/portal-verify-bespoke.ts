@@ -268,7 +268,6 @@ async function getJwks(cfg: VerifierConfig): Promise<JWK[]> {
         .catch((err) => {
           // Swallow background refresh failures; we still have a stale entry.
           // Surface the error on the next cold fetch.
-          // eslint-disable-next-line no-console
           console.warn(
             "[portal-verify] background JWKS refresh failed:",
             err.message,
