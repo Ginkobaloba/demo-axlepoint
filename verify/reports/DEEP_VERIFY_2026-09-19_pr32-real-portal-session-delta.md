@@ -44,6 +44,14 @@ middleware copy).
 
 "It passed before" is not used as a reason anywhere above.
 
+Every path named as a carry-forward reason was confirmed to exist at
+`197926a` with `git ls-tree`, not assumed: `src/lib/wo-actions.ts`,
+`src/lib/queries.ts`, `src/lib/db.ts`, `src/app/api/work-orders/route.ts`,
+`src/app/api/work-orders/[id]/route.ts`, and the 13 page files under
+`src/app/app/`. None of them appears in the section 1 table of differing
+blobs, which is what makes them byte-identical across `197926a`, `d01301a`
+and `afa12ba`.
+
 ## 1. Tree equivalence: the merge is the union, with one docs-only exception
 
 Method: blob-hash comparison of every path in all three trees, `197926a` (H),
@@ -136,10 +144,14 @@ git    197926a:src/lib/portal-session.ts -> efc73308022fbd2bb122bb5ee1d9afdf2a3c
 `git archive` on this machine has been observed emitting CRLF before, so the
 CR count and the blob-hash identity are checked rather than assumed. The tar
 was piped straight into `docker build` (`docker build ... - < head197926a.tar`),
-which also keeps the worktree's untracked root `.npmrc` out of `COPY . .`. The
-private `@paradigm-codes/auth` dependency was installed through
-`--secret id=npmrc,src=<scratchpad npmrc>`; that file was never opened. Image
-`demo-axlepoint:dv32d`, build exit 0.
+so the build context is the commit and nothing else: no working-tree state, no
+`node_modules`, no `.next`. The repo's root `.npmrc` is tracked (blob
+`24740478`, byte-identical in all three trees) and is therefore in the archive
+exactly as committed, same as it would be for any other build of this commit;
+it was not opened here. The private `@paradigm-codes/auth` dependency was
+installed through `--secret id=npmrc,src=<scratchpad npmrc>`, mounted at
+`/root/.npmrc` in the `deps` stage only; that file was passed by path and never
+opened. Image `demo-axlepoint:dv32d`, build exit 0.
 
 Clock sanity before probing, because #30's `maxTokenAge` has zero tolerance and
 a lagging container clock would make a valid control look like a failure:
