@@ -18,7 +18,7 @@
 import { SignJWT, jwtVerify } from "jose";
 
 const COOKIE_NAME = "axle_portal_session";
-const SESSION_TTL_SECONDS = 60 * 60 * 8; // 8h, same order as a workday
+export const SESSION_TTL_SECONDS = 60 * 60 * 8; // 8h, same order as a workday
 const HS256_ALG = "HS256";
 
 export const PORTAL_SESSION_COOKIE = COOKIE_NAME;

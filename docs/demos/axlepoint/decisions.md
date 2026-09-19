@@ -497,17 +497,22 @@ session. No `issuer`/`audience` check for the same reason: neither is
 set at mint time.
 
 Mutation check, both layers: deleting only the `requiredClaims` line does
-not turn any of the 15 hand-signed tests red (0/15), because the
+not turn any of the 17 hand-signed tests red (0/17), because the
 post-verify `typeof` guard on `sub` and the explicit `exp`/`iat` shape
 checks already reject an absent claim independent of `requiredClaims` --
 in this codebase, `requiredClaims` is belt-and-suspenders with those
 checks, not the sole gate. Deleting the explicit `exp - iat` bound block
-instead (keeping `requiredClaims` and `maxTokenAge`) turns 4/15 red: exp
+instead (keeping `requiredClaims` and `maxTokenAge`) turns 5/17 red: exp
 a century out, fractional exp, fractional iat (isolated from the
-future-iat case), and a lifetime one hour over the 8-hour TTL.
-`maxTokenAge` bounds `iat` against "now" but never relates it to `exp`,
-so those four shapes pass jose's own checks and are caught only by the
-explicit bound.
+future-iat case), a lifetime one hour over the 8-hour TTL, and the
+boundary case one second over the TTL (`exp - iat === SESSION_TTL_SECONDS`
+exactly is, correctly, still accepted under the mutation, since
+`maxTokenAge` alone never rejects it). `maxTokenAge` bounds `iat` against
+"now" but never relates it to `exp`, so those shapes pass jose's own
+checks and are caught only by the
+explicit bound. `SESSION_TTL_SECONDS` is exported from
+`portal-session.ts` and imported by the test file so the TTL used in
+tests can never drift from the one enforced at verify time.
 
 No clock tolerance added: mint and verify share a process clock, so
 there is no skew to absorb, and nothing else in this codebase uses

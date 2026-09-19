@@ -1,9 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { SignJWT } from "jose";
-import { mintPortalSession, readPortalSession, PORTAL_SESSION_COOKIE } from "./portal-session";
+import {
+  mintPortalSession,
+  readPortalSession,
+  PORTAL_SESSION_COOKIE,
+  SESSION_TTL_SECONDS as TTL,
+} from "./portal-session";
 
 const TEST_SECRET = "a".repeat(48);
-const TTL = 60 * 60 * 8; // must track SESSION_TTL_SECONDS in portal-session.ts
 
 /**
  * Hand-sign a token with the repo's own AXLE_PORTAL_SESSION_SECRET,
@@ -163,6 +167,26 @@ describe("portal-session", () => {
       const session = await readPortalSession(token);
       expect(session).not.toBeNull();
       expect(session?.sub).toBe("a@b.com");
+    });
+
+    it("boundary: exp - iat exactly equal to the TTL is accepted", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const token = await handSign({
+        sub: "a@b.com",
+        iat: now,
+        exp: now + TTL,
+      });
+      expect(await readPortalSession(token)).not.toBeNull();
+    });
+
+    it("boundary: exp - iat one second over the TTL is refused", async () => {
+      const now = Math.floor(Date.now() / 1000);
+      const token = await handSign({
+        sub: "a@b.com",
+        iat: now,
+        exp: now + TTL + 1,
+      });
+      expect(await readPortalSession(token)).toBeNull();
     });
   });
 });
