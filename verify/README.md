@@ -69,3 +69,14 @@ Deep Verify job) accepts a report only if all of these hold:
 Commit the report as a child of the tested commit. If the code changes after
 the run, the report no longer counts and the deep run has to be repeated. The
 gate's own tests are `verify/ci/test_deep_gate.sh` (run in Quick Verify).
+
+If the PR is updated from main after the run (for example "Update branch", or
+a required up-to-date check), the merge brings in files outside
+`verify/reports/` and the old Tested-SHA stops counting. Then:
+
+1. update the PR from main, which creates merge commit M;
+2. confirm no app code came in:
+   `git diff --name-only <old Tested-SHA> M -- . ':(exclude)verify/' ':(exclude).github/'`
+   must print nothing (if it prints files, re-run the deep verify);
+3. add one report-only commit that sets `Tested-SHA:` to the full sha of M;
+4. merge.
