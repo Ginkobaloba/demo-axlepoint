@@ -13,9 +13,17 @@
  * HS256 is fine here because both the issuer (this handoff route) and the
  * verifier (this app's middleware / pages) are the same Node process. We
  * are not federating this cookie anywhere.
+ *
+ * readPortalSession is called from src/middleware.ts, which runs in the
+ * Edge runtime. Subpath imports (jose/jwt/sign, jose/jwt/verify) keep the
+ * Edge bundle to JWS/JWT only; the jose root entry also pulls in JWE
+ * (deflate via CompressionStream), which Next's Edge analyzer flags as
+ * unsupported even though it is never called here. Same pattern as
+ * lumen-analytics src/lib/portal-session.ts.
  */
 
-import { SignJWT, jwtVerify } from "jose";
+import { SignJWT } from "jose/jwt/sign";
+import { jwtVerify } from "jose/jwt/verify";
 
 const COOKIE_NAME = "axle_portal_session";
 export const SESSION_TTL_SECONDS = 60 * 60 * 8; // 8h, same order as a workday

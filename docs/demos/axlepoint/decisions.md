@@ -528,3 +528,86 @@ mints) and tests (which round-trip). `readPortalSession`'s `role` fallback
 `PortalSessionClaims["role"]` union. Both predate this fix and are
 unrelated to the exp/iat/sub gap; flagging for a future audit pass rather
 than fixing here.
+
+Reconciled when PR #32 merged (2026-09-19): the "no production caller"
+note above was true when D-014 was written and is no longer. D-015 below
+wires readPortalSession into src/middleware.ts, so the claim bounds
+described here now gate the live /app surface. The role-union fallback
+noted above is still open.
+
+## D-015: The portal session cookie is verified, not just checked for presence (2026-09-19)
+
+The live gap: src/middleware.ts gated /app on
+request.cookies.has(PORTAL_SESSION_COOKIE), presence only, with no
+signature or claim check, so any cookie value opened the app. Meanwhile
+readPortalSession, the real HS256 verifier in src/lib/portal-session.ts,
+had no production caller anywhere in the app. Same finding class as
+lumen-analytics L1 (tests/middleware-session.test.ts there), and this fix
+mirrors that merged PR's shape.
+
+middleware.ts now calls readPortalSession (jose, Edge-safe subpath
+imports) on the portal cookie and treats a missing, invalid, or forged
+value exactly as if none were sent, clearing it on the way out so a
+forged value does not linger in the browser. portal-session.ts switched
+its jose import from the root entry to jose/jwt/sign and jose/jwt/verify,
+same reasoning as lumen-analytics: the root entry also pulls in JWE
+(CompressionStream), which Next's Edge analyzer flags as unsupported even
+though it is never called here. No new dependency: jose ^6.2.3 was
+already a direct dependency.
+
+The demo cookie path (axle_demo_session) is unchanged and deliberately
+still presence-only: D-006 already establishes it as a bare marker with
+no claims to check, not a portal-backed identity. This PR closes forged
+*portal* identity. /app is still reachable with axle_demo_session set to
+any value, by design.
+
+No other route reads or requires the portal session cookie today: every
+/api/* handler is either anonymous by design (D-012) or, for
+portal-handoff, mints the cookie rather than checking an existing one. So
+the middleware gate is the only session-required surface in the
+fail-closed sense; fixing it closes the whole gap.
+
+Fail-closed behavior (AXLE_PORTAL_SESSION_SECRET missing or under 32
+characters) needed no new code: readPortalSession's getSecret() already
+throws in that case, and the existing try/catch in readPortalSession
+already turns that throw into a verification failure, the same outcome as
+a bad signature.
+
+Deliberately not duplicated here: PR #30 (fix/customer-session-claims,
+branched earlier off main) adds requiredClaims, maxTokenAge, and an
+explicit exp-iat bound to readPortalSession, closing a token that is
+validly signed but missing exp/iat (verifies forever on main today) or
+has an exp set arbitrarily far in the future. This PR's own hostile-token
+tests do not depend on that hardening: the one "missing claims" case they
+exercise (a hand-signed token missing sub) is already refused by main's
+existing `typeof payload.sub !== "string"` check. If #30 merges first,
+this branch rebases; if this merges first, #30's diff should still apply
+cleanly (its hunks are further down portal-session.ts than this PR's
+import-line change). Also flagged in #30, out of scope here: the role
+fallback `?? "customer"` in readPortalSession does not validate against
+the PortalSessionClaims role union.
+
+Verified: 10 new tests in src/middleware.test.ts (hostile portal cookie
+matrix: an inert opaque string that opened /app before this fix, an
+empty value, a signature-stripped token, a token forged with another
+secret, a tampered payload with the original signature, an expired
+token, an alg-none token, and a token missing the sub claim; a demo
+cookie set to any value still passes, by design; a hand-signed and a
+mintPortalSession-minted valid portal session both pass; a bad portal
+cookie alongside a valid demo cookie still passes but clears the bad
+cookie; fail-closed when the secret is missing or short). Full suite 111
+passed, 2 pre-existing skipped (up from 101 passed on the rebased base,
+this branch's 10 new tests, after rebasing onto origin/main's #31
+ledger-check fix); tsc, lint, and build all green, including a clean
+production build of the Edge middleware bundle (40.1 kB, no Edge-runtime
+warnings from the jose subpath imports).
+
+Mutation check: reverted src/middleware.ts to the pristine
+presence-only check from origin/main and reran src/middleware.test.ts;
+4 of the 10 new tests went red (the hostile-cookie matrix, the
+bad-portal-plus-valid-demo case, and both fail-closed cases), the other
+6 stayed green (they only exercise cookie presence/absence, which the
+old code also handled correctly). Restored src/middleware.ts from a
+pristine copy taken before the mutation; diff against that copy showed
+no difference; git status showed only the intended files changed before
+committing.
