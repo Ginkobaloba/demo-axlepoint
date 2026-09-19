@@ -475,3 +475,51 @@ a slightly larger builder stage, and the toolchain only lives in the
 build stage (never ships in the runtime image), so it was kept as a
 fallback: better-sqlite3 normally installs from the prebuild, and
 compiles from source only if that download fails or is unavailable.
+
+## D-014: Bound the axle_portal_session lifetime by value, not just presence (2026-09-19)
+
+Fleet audit `AUDIT_JWT_REQUIRED_CLAIMS_2026-09-19.md` (finding #4): jose's
+`jwtVerify` validates `exp`, `iat`, and `nbf` only when the claim is
+present, so a hand-signed `axle_portal_session` token that simply omits
+`exp` was never rejected by the signature check alone. `mintPortalSession`
+always sets `sub`, `iat`, and `exp`, but anyone holding
+`AXLE_PORTAL_SESSION_SECRET` could sign a token by hand, and
+`readPortalSession` has to refuse it regardless.
+
+`readPortalSession` now passes `requiredClaims: ["sub", "iat", "exp"]`
+and `maxTokenAge: SESSION_TTL_SECONDS` (the same 8-hour constant
+`mintPortalSession` uses), plus an explicit post-verify check that `exp`
+and `iat` are integers and `exp - iat` is positive and no greater than
+the TTL, mirroring demo-slatewell's `admin-session.ts` (#38, #39). No
+`jti` requirement: `mintPortalSession` does not mint one, and adding it
+to `requiredClaims` without also minting it would reject every real
+session. No `issuer`/`audience` check for the same reason: neither is
+set at mint time.
+
+Mutation check, both layers: deleting only the `requiredClaims` line does
+not turn any of the 15 hand-signed tests red (0/15), because the
+post-verify `typeof` guard on `sub` and the explicit `exp`/`iat` shape
+checks already reject an absent claim independent of `requiredClaims` --
+in this codebase, `requiredClaims` is belt-and-suspenders with those
+checks, not the sole gate. Deleting the explicit `exp - iat` bound block
+instead (keeping `requiredClaims` and `maxTokenAge`) turns 4/15 red: exp
+a century out, fractional exp, fractional iat (isolated from the
+future-iat case), and a lifetime one hour over the 8-hour TTL.
+`maxTokenAge` bounds `iat` against "now" but never relates it to `exp`,
+so those four shapes pass jose's own checks and are caught only by the
+explicit bound.
+
+No clock tolerance added: mint and verify share a process clock, so
+there is no skew to absorb, and nothing else in this codebase uses
+`clockTolerance`.
+
+Separately noted, out of scope for this fix: `readPortalSession` has no
+production caller today. `src/middleware.ts` gates `/app` on
+`request.cookies.has(PORTAL_SESSION_COOKIE)` (presence only, no
+signature or claim check at all), and no page or route reads the cookie
+through `readPortalSession` in production, only the handoff route (which
+mints) and tests (which round-trip). `readPortalSession`'s `role` fallback
+(`?? "customer"`) also does not validate the value against the
+`PortalSessionClaims["role"]` union. Both predate this fix and are
+unrelated to the exp/iat/sub gap; flagging for a future audit pass rather
+than fixing here.

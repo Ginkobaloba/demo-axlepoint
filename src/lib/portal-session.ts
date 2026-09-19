@@ -60,6 +60,36 @@ export async function mintPortalSession(
   return { value, maxAgeSeconds: SESSION_TTL_SECONDS };
 }
 
+/**
+ * Verify a session token. Returns null on any failure, including a token
+ * that is validly signed but missing sub, iat, or exp.
+ *
+ * jose's jwtVerify checks exp/iat/nbf only when the claim is present, so a
+ * hand-signed token that simply omits exp would otherwise verify forever.
+ * requiredClaims closes that: a session missing sub, iat, or exp is
+ * refused outright, even though mintPortalSession never produces one.
+ *
+ * requiredClaims alone only checks presence, not value. jose validates
+ * iat's value against the clock only when maxTokenAge is set, and it never
+ * relates exp to iat at all. Without more, a holder of
+ * AXLE_PORTAL_SESSION_SECRET could still hand-sign an "accepted" token
+ * with exp decades out, iat in the future, iat after exp, or a fractional
+ * exp/iat. Two layers close that, mirroring demo-slatewell's
+ * admin-session.ts (#38, #39):
+ *   - maxTokenAge: SESSION_TTL_SECONDS makes jose itself reject an iat more
+ *     than the session TTL in the past, or an iat in the future at all
+ *     (zero clock tolerance; mint and verify share a process clock, so no
+ *     skew to absorb).
+ *   - An explicit check below requires exp - iat to be a positive integer
+ *     no greater than SESSION_TTL_SECONDS. maxTokenAge bounds iat against
+ *     "now" but never against exp, so it does not by itself stop a token
+ *     minted this second with exp set decades out; this check does. It
+ *     also rejects a fractional exp or iat, which jose accepts as long as
+ *     it is a finite number.
+ *
+ * No issuer/audience check: mintPortalSession does not set iss/aud, so
+ * requiring them here would reject every real session.
+ */
 export async function readPortalSession(
   cookieValue: string | undefined,
 ): Promise<PortalSessionClaims | null> {
@@ -67,8 +97,21 @@ export async function readPortalSession(
   try {
     const { payload } = await jwtVerify(cookieValue, getSecret(), {
       algorithms: [HS256_ALG],
+      requiredClaims: ["sub", "iat", "exp"],
+      maxTokenAge: SESSION_TTL_SECONDS,
     });
     if (typeof payload.sub !== "string") return null;
+    const { exp, iat } = payload;
+    if (
+      typeof exp !== "number" ||
+      typeof iat !== "number" ||
+      !Number.isInteger(exp) ||
+      !Number.isInteger(iat) ||
+      exp - iat <= 0 ||
+      exp - iat > SESSION_TTL_SECONDS
+    ) {
+      return null;
+    }
     return {
       sub: payload.sub,
       customer_id:
