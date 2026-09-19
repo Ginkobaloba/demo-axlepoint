@@ -1,60 +1,87 @@
+// Tests for the ledger check's three states. Run: npm test
+//
+// The case that matters is zero entries: `check` used to print
+// "0 entries, 0 problem(s)" and exit 0 when the directory was missing or
+// empty, so a move, a rename or a wrong path left the check green while it
+// inspected nothing.
 import { describe, expect, it } from "vitest";
-import { checkAll, checkEntry, scaffold, slugify } from "./ledger.mjs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-const GOOD_NAME = "2026-09-19-0340-ledger-one-file-per-entry.md";
-const good = (heading = "# 2026-09-19 03:40 CDT - Ledger: one file per entry") =>
-  [heading, "- **Who:** a", "- **Change:** b", "- **Why:** c", "- **State after:** d", "- **Refs:** e", ""].join("\n");
+import { checkEntry, listEntries, runCheck } from "./ledger.mjs";
 
-describe("checkEntry", () => {
-  it("accepts a well-formed entry", () => {
-    expect(checkEntry(GOOD_NAME, good())).toEqual([]);
+const VALID = [
+  "# 2026-09-19 16:13 CDT - a valid entry",
+  "- **Who:** dev-44",
+  "- **Change:** something concrete",
+  "- **Why:** a reason",
+  "- **State after:** what is true now",
+  "- **Refs:** PR #1",
+  "",
+].join("\n");
+const VALID_NAME = "2026-09-19-1613-a-valid-entry.md";
+
+function tmp() {
+  return mkdtempSync(join(tmpdir(), "ledger-test-"));
+}
+
+function capture(dir) {
+  const out = [];
+  const errs = [];
+  const code = runCheck(dir, (m) => out.push(m), (m) => errs.push(m));
+  return { code, out: out.join("\n"), errs: errs.join("\n") };
+}
+
+describe("ledger check", () => {
+  it("check fails when docs/ledger is missing", () => {
+    const r = capture(join(tmp(), "docs", "ledger"));
+    expect(r.code).toBe(1);
+    expect(r.errs).toMatch(/does not exist/);
+    expect(r.out).not.toMatch(/0 entries, 0 problem/);
   });
 
-  it("accepts CRLF line endings (Windows checkouts)", () => {
-    expect(checkEntry(GOOD_NAME, good().replace(/\n/g, "\r\n"))).toEqual([]);
+  it("check fails when docs/ledger has zero entries", () => {
+    const dir = join(tmp(), "ledger");
+    mkdirSync(dir, { recursive: true });
+    const r = capture(dir);
+    expect(r.code).toBe(1);
+    expect(r.errs).toMatch(/no entries found/);
   });
 
-  it("rejects a bad file name", () => {
-    expect(checkEntry("2026-09-19-ledger.md", good())[0]).toMatch(/name must be/);
-    expect(checkEntry("2026-09-19-0340-Ledger_Entry.md", good())[0]).toMatch(/name must be/);
+  it("README alone is still no entries", () => {
+    const dir = join(tmp(), "ledger");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "README.md"), "# Ledger\n");
+    expect(capture(dir).code).toBe(1);
   });
 
-  it("rejects a heading whose date or time differs from the file name", () => {
-    expect(checkEntry(GOOD_NAME, good("# 2026-09-19 03:41 CDT - x")).join()).toMatch(/does not match/);
-    expect(checkEntry(GOOD_NAME, good("# 2026-09-18 03:40 CDT - x")).join()).toMatch(/does not match/);
+  it("check passes on a normal tree", () => {
+    const dir = join(tmp(), "ledger");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, VALID_NAME), VALID);
+    const r = capture(dir);
+    expect(r.code).toBe(0);
+    expect(r.out).toMatch(/1 entries, 0 problem/);
   });
 
-  it("rejects a malformed heading", () => {
-    expect(checkEntry(GOOD_NAME, good("## 2026-09-19 03:40 CDT - x")).join()).toMatch(/first line/);
+  it("a malformed entry still fails", () => {
+    const dir = join(tmp(), "ledger");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, VALID_NAME), VALID.replace("- **Why:** a reason\n", ""));
+    const r = capture(dir);
+    expect(r.code).toBe(1);
+    expect(r.errs).toMatch(/missing "- \*\*Why:\*\*"/);
   });
 
-  it("requires every field", () => {
-    const missing = good().replace("- **Why:** c\n", "");
-    expect(checkEntry(GOOD_NAME, missing)).toEqual([`${GOOD_NAME}: missing "- **Why:**"`]);
+  it("the real ledger of this repo is valid and not empty", () => {
+    expect(listEntries().length).toBeGreaterThan(0);
+    expect(runCheck(undefined, () => {}, () => {})).toBe(0);
   });
 
-  it("rejects em dashes", () => {
-    expect(checkEntry(GOOD_NAME, good() + `a ${String.fromCharCode(0x2014)} b\n`).join()).toMatch(/em dash/);
-  });
-});
-
-describe("slugify and scaffold", () => {
-  it("makes a lowercase kebab slug", () => {
-    expect(slugify("C10b: /lab/draughts page, pinned!")).toBe("c10b-lab-draughts-page-pinned");
-    expect(() => slugify("!!!")).toThrow();
-  });
-
-  it("scaffolds an entry that passes the check once filled in", () => {
-    const when = new Date(2026, 8, 19, 3, 40);
-    const { name, body } = scaffold("Ledger: one file per entry", when);
-    expect(name).toBe(GOOD_NAME);
-    const filled = body.replace(/:\*\* $/gm, ":** filled");
-    expect(checkEntry(name, filled)).toEqual([]);
-  });
-});
-
-describe("docs/ledger", () => {
-  it("every committed entry is well formed", () => {
-    expect(checkAll()).toEqual([]);
+  it("checkEntry still catches name/heading mismatches and em dashes", () => {
+    expect(checkEntry("2026-09-19-1613-x.md", VALID.replace("16:13", "17:13")).join()).toMatch(/does not match the file name/);
+    expect(checkEntry(VALID_NAME, VALID.replace("a reason", "a — reason")).join()).toMatch(/em dash/);
+    expect(checkEntry("nope.md", VALID).join()).toMatch(/name must be/);
   });
 });

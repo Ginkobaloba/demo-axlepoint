@@ -2,16 +2,16 @@
 // The ledger, one file per entry: docs/ledger/YYYY-MM-DD-HHMM-<slug>.md
 //
 //   node scripts/ledger.mjs new "<short title>"   scaffold an entry (now, local time)
-//   node scripts/ledger.mjs check                 validate every entry (also run by CI/tests)
+//   node scripts/ledger.mjs check                 validate every entry (also run by npm test)
 //   node scripts/ledger.mjs print                 all entries, oldest first, to stdout
 //
-// Why one file per entry: when every PR appended to one ledger file, any two
-// open PRs conflicted, so each merge after the first needed a rebase. New
+// Why one file per entry: when every PR appended to one docs/LEDGER.md, any
+// two open PRs conflicted, so each merge after the first needed a rebase. New
 // files never conflict. There is deliberately no committed index, because a
 // generated index file would conflict the same way; `print` builds the view
-// on demand.
+// on demand. docs/LEDGER.md is frozen as history (entries up to 2026-09-19).
 //
-// Entry format:
+// Entry format (the same fields as the frozen ledger):
 //   # YYYY-MM-DD HH:MM TZ - <short title>
 //   - **Who:** ...
 //   - **Change:** ...
@@ -20,8 +20,6 @@
 //   - **Refs:** ...
 // The file name's date and time must match the heading's. Append only: to
 // correct an entry, add a new one whose Why starts "Supersedes <file name>".
-//
-// Reference implementation: Ginkobaloba/paradigm-site PR #97.
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -32,7 +30,7 @@ export const LEDGER_DIR = join(ROOT, "docs", "ledger");
 export const FIELDS = ["Who", "Change", "Why", "State after", "Refs"];
 export const NAME_RE = /^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})-([a-z0-9]+(?:-[a-z0-9]+)*)\.md$/;
 const HEADING_RE = /^# (\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}) ([A-Z]{2,5}) - (\S.*)$/;
-const EM_DASH = String.fromCharCode(0x2014);
+const EM_DASH = "—";
 
 /** Problems with one entry; empty array means valid. */
 export function checkEntry(name, text) {
@@ -101,12 +99,34 @@ export function scaffold(title, when = new Date()) {
   return { name, body };
 }
 
+/**
+ * Exit code for `check`, given the ledger directory.
+ *
+ * Zero entries is a FAILURE, not a pass: after a move, a rename or a wrong
+ * path the old code printed "0 entries, 0 problem(s)" and exited 0, so the
+ * check went green while inspecting nothing. The two zero cases are reported
+ * differently, because "the directory is gone" and "the directory is empty"
+ * have different causes.
+ */
+export function runCheck(dir = LEDGER_DIR, log = console.log, err = console.error) {
+  if (!existsSync(dir)) {
+    err(`ledger: ${dir} does not exist; nothing was checked (moved, renamed, or wrong path?)`);
+    return 1;
+  }
+  const entries = listEntries(dir);
+  if (entries.length === 0) {
+    err(`ledger: no entries found in ${dir}; nothing was checked (every change needs an entry)`);
+    return 1;
+  }
+  const problems = checkAll(dir);
+  for (const p of problems) err(`ledger: ${p}`);
+  log(`ledger: ${entries.length} entries, ${problems.length} problem(s).`);
+  return problems.length ? 1 : 0;
+}
+
 function main([cmd, ...rest]) {
   if (cmd === "check") {
-    const problems = checkAll();
-    for (const p of problems) console.error(`ledger: ${p}`);
-    console.log(`ledger: ${listEntries().length} entries, ${problems.length} problem(s).`);
-    return problems.length ? 1 : 0;
+    return runCheck();
   }
   if (cmd === "print") {
     for (const f of listEntries()) process.stdout.write(`${readFileSync(join(LEDGER_DIR, f), "utf8").trimEnd()}\n\n`);
