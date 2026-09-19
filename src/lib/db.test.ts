@@ -133,3 +133,76 @@ describe("resetDbIfDue: seed snapshot present", () => {
     }
   });
 });
+
+// Deep-verify PR #24 blocker B2: fs.copyFileSync preserves the source
+// file's permission bits, so a read-only seed (Dockerfile chmod 444) made
+// the copied-then-renamed live database read-only too, and a read-only
+// leftover temp file (from a crash mid-copy) permanently blocked every
+// later reset. POSIX file modes are not meaningful on Windows (chmod is a
+// no-op there beyond toggling the DOS read-only attribute for the owner,
+// and even that does not reproduce the Linux container's failure mode),
+// so these run only where the mode bits actually mean something -- with a
+// clear skip message rather than passing trivially and proving nothing.
+const isPosix = process.platform !== "win32";
+
+describe("resetDbIfDue: read-only seed (B2 regression)", () => {
+  beforeEach(() => {
+    db._resetAxlepointDbStateForTests();
+    removeSidecars(LIVE);
+    removeSidecars(SEED);
+    writeSqliteFile(SEED, ["Seeded row"]);
+    writeSqliteFile(LIVE, ["Seeded row"]);
+    if (isPosix) fs.chmodSync(SEED, 0o444);
+  });
+
+  it.skipIf(!isPosix)(
+    "a 0o444 seed still leaves the live database writable after a reset " +
+      "(POSIX only: chmod does not reproduce the container's failure mode on win32)",
+    () => {
+      expect(db.resetDbIfDue(Date.now())).toBe(true);
+
+      // The bug: fs.copyFileSync propagated the seed's read-only mode onto
+      // the live file. Confirm it did not, both by checking the mode bit
+      // and by actually writing through it, which is what a real request
+      // does and what the deep-verify report's 500s were.
+      const mode = fs.statSync(LIVE).mode & 0o777;
+      expect(mode & 0o200).toBeTruthy(); // owner-writable bit set
+
+      const conn = new Database(LIVE, { fileMustExist: true });
+      expect(() =>
+        conn.prepare("INSERT INTO work_orders (id, title) VALUES (?, ?)").run(
+          "WO-WRITE-CHECK",
+          "a write after reset must succeed",
+        ),
+      ).not.toThrow();
+      conn.close();
+    },
+  );
+
+  it.skipIf(!isPosix)(
+    "a stale read-only leftover temp file does not block the next reset " +
+      "(POSIX only: chmod does not reproduce the container's failure mode on win32)",
+    () => {
+      // Simulate a crash mid-copy: a previous reset got as far as creating
+      // the temp file (inheriting the seed's read-only mode) but never
+      // reached the rename. fs.copyFileSync cannot overwrite a read-only
+      // destination, so without the fix every later resetDbIfDue call
+      // would fail with EACCES, forever, until a redeploy.
+      const tmp = `${LIVE}.reset-tmp`;
+      fs.writeFileSync(tmp, "stale partial copy from a simulated crash");
+      fs.chmodSync(tmp, 0o444);
+
+      expect(db.resetDbIfDue(Date.now())).toBe(true);
+      expect(ids(LIVE)).toEqual(["WO-0"]);
+
+      const conn = new Database(LIVE, { fileMustExist: true });
+      expect(() =>
+        conn.prepare("INSERT INTO work_orders (id, title) VALUES (?, ?)").run(
+          "WO-WRITE-CHECK-2",
+          "a write after recovering from a stale tmp must succeed",
+        ),
+      ).not.toThrow();
+      conn.close();
+    },
+  );
+});

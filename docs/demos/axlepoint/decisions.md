@@ -377,8 +377,10 @@ line (`err instanceof Error ? err.message : String(err)`) instead of a
 full stack on every due interval, since a misconfigured short interval
 would otherwise spam the log; and the Dockerfile now chmods
 data/axlepoint.seed.db read-only for the app user after the chown, since
-nothing in the app writes to it and the "seed is pristine" assumption is
-worth enforcing rather than just documenting.
+nothing in the app writes to it. **This last item shipped with a real
+defect -- see the round-3 addendum below; it does not "harden" anything
+by itself, because fs.copyFileSync propagates the source file's
+permission bits.**
 
 Verified (round 2): src/app/api/work-orders/route.test.ts adds marker
 tests for assigned_to on both POST (JSON and form) and PATCH `assign`
@@ -386,3 +388,72 @@ tests for assigned_to on both POST (JSON and form) and PATCH `assign`
 queries.ts read-back the title/description tests use, plus 422 coverage
 for an unknown technician id on both routes and for an invalid due_date
 on POST. All existing tests continue to pass.
+
+## D-012 addendum (2026-09-19, round 3): the chmod 444 seed broke every write -- blocker B2
+
+Independent re-verify of the round-2 fix (same report file, "Re-verify
+(round 2)" section) built the actual image and found the "harden the
+seed" item above was not harmless: `fs.copyFileSync` preserves the
+source file's permission bits, and `resetDbIfDue` copies
+`data/axlepoint.seed.db` (mode 444, per the Dockerfile change) straight
+into the temp file that then becomes the live database. Result: on every
+container start, the first `getDb()` call reset the live database and
+made it `-r--r--r--`. Every write route returned 500
+(`SqliteError: attempt to write a readonly database`) for the rest of
+the container's life -- creating a work order, every PATCH, purchase
+orders, schedule drag, all of it. The privacy fix itself held completely
+(0 markers anywhere, confirmed independently again), but the demo was
+dead as built. A second, separate failure mode: if a reset ever crashed
+mid-copy, the leftover temp file inherited the same read-only mode and
+`fs.copyFileSync` cannot overwrite a read-only destination (it opens the
+destination for writing rather than recreating it), so every later reset
+failed with EACCES -- permanently, until a redeploy.
+
+The 88 unit tests did not catch either failure because no test fixture
+made the seed file itself read-only; the bug only exists once a real
+filesystem enforces the Dockerfile's mode bits.
+
+Kept the read-only seed (it is still worth having: it is a structural
+guarantee nothing in the app can accidentally write to the one file the
+reset depends on) and fixed resetDbIfDue instead, in src/lib/db.ts:
+before copying, `fs.rmSync(tmp, { force: true })` clears any stale
+leftover temp file regardless of its mode (deleting a file depends on
+the containing directory's write permission, not the file's own mode, so
+this works even against a read-only leftover); after the copy,
+`fs.chmodSync(tmp, 0o644)` restores a normal writable mode before the
+`fs.renameSync` that makes it live. The -wal and -shm sidecar files are
+never copied (only DB_PATH itself is), so they were never part of this
+bug; `removeSidecars` already clears any old ones before the copy, and
+better-sqlite3 creates fresh ones against the now-writable DB_PATH once
+the rename lands.
+
+Verified (round 3): src/lib/db.test.ts adds two cases against a real
+0o444 seed file -- a reset still leaves the live database writable
+afterward, and a stale read-only leftover temp file from a simulated
+crash does not block the next reset. Both use `it.skipIf(!isPosix)` with
+the reason in the test name (`process.platform`), since POSIX mode bits
+are not meaningful on win32 and a silent pass would be worse than no
+test. Also spot-checked against a real Linux container (Docker Desktop):
+built the image with the chmod 444 seed intact, ran it at
+AXLEPOINT_RESET_INTERVAL_MS=1 (a reset before every request), and
+confirmed the live DB was -rw-r--r-- after the boot reset (the seed
+stayed -r--r--r--), four POST /api/work-orders calls returned 200, and a
+simulated crash leftover (a hand-created, chmod 444'd
+axlepoint.db.reset-tmp) was cleared by the next reset with the following
+write still returning 200 and no [reset] errors in the logs. This was a
+smoke check, not a repeat of the deep-verify report's full matrix; a
+fresh deep verify against a built image is still the right next step
+before merge, per the report's own "container-level changes need a
+runtime check" note.
+
+Also fixed this round, flagged by the same re-verify (W5, minor, not
+persistence-related): POST /api/work-orders and PATCH's `due` action
+disagreed on two edge cases. POST trimmed a whitespace-only due_date to
+empty and cleared it (200); PATCH did not trim before its `=== ""` check,
+so the same whitespace-only input fell through to `new Date()` and
+422'd. Both also accepted a calendar-overflow date such as 2026-02-30,
+because `new Date()` silently normalizes it to March 2 instead of
+rejecting it -- neither route's NaN check catches that. Both now go
+through isValidIsoDate (src/lib/schedule-view.ts, already used by the
+schedule board), which does a round-trip check that rejects overflow,
+and both trim first so whitespace-only means "clear" in both places.

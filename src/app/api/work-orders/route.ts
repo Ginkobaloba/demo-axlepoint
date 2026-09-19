@@ -7,6 +7,7 @@ import {
   screenWorkOrderTitle,
 } from "@/lib/work-order-validation";
 import { deriveRecommendedWorkOrder } from "@/lib/predictive-action";
+import { isValidIsoDate } from "@/lib/schedule-view";
 
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const TYPES = ["corrective", "preventive", "inspection", "predictive"];
@@ -71,16 +72,23 @@ export async function POST(request: NextRequest) {
     assignedTo = assignedToRaw;
   }
 
-  // W4 (deep-verify PR #24): PATCH already 422s on an unparseable due date
-  // (wo-actions.ts); this route silently stored NULL instead. Match PATCH.
+  // W4/W5 (deep-verify PR #24): PATCH already 422s on an unparseable due
+  // date (wo-actions.ts); this route silently stored NULL instead (W4,
+  // fixed). It also accepted an overflow date like 2026-02-30, silently
+  // rolling it to March 2 (W5) -- a plain `new Date().getTime()` NaN check
+  // never catches that, since JS Date normalizes overflow instead of
+  // rejecting it. Both routes now go through the same isValidIsoDate
+  // helper the schedule board already uses (schedule-view.ts), which does
+  // a round-trip check to reject overflow, so shape AND calendar validity
+  // match between POST and PATCH. Trimmed-empty/whitespace-only still
+  // means "no due date" (clear), same as PATCH's trimmed-empty check.
   const dueRaw = String(raw.due_date ?? "").trim();
   let dueAt: number | null = null;
   if (dueRaw) {
-    const ms = new Date(`${dueRaw}T12:00:00`).getTime();
-    if (Number.isNaN(ms)) {
+    if (!isValidIsoDate(dueRaw)) {
       return reject(422, "Invalid due date.");
     }
-    dueAt = Math.floor(ms / 1000);
+    dueAt = Math.floor(new Date(`${dueRaw}T12:00:00`).getTime() / 1000);
   }
 
   // Anonymous by design (D-012): the visitor's literal title and

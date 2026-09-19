@@ -296,7 +296,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
   });
 });
 
-describe("POST /api/work-orders -- W2/W4 fixes (deep-verify PR #24)", () => {
+describe("POST /api/work-orders -- W2/W4/W5 fixes (deep-verify PR #24)", () => {
   it("W2: the created-order redirect Location is relative, not built from request.url", async () => {
     const res = await POST(
       formRequest({
@@ -340,6 +340,60 @@ describe("POST /api/work-orders -- W2/W4 fixes (deep-verify PR #24)", () => {
     expect(res.status).toBe(303);
     const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
     expect(queries.getWorkOrder(id)?.due_at).toBeTruthy();
+  });
+
+  it("W5: rejects an overflow date (2026-02-30) instead of silently rolling it to March 2", async () => {
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        due_date: "2026-02-30",
+      }),
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toContain("error=Invalid%20due%20date.");
+  });
+
+  it("W5: treats a whitespace-only due_date as a clear, not an error (same as PATCH now)", async () => {
+    const res = await POST(
+      formRequest({
+        asset_id: "AST-01",
+        title: "A perfectly normal work order title",
+        type: "corrective",
+        priority: "medium",
+        due_date: "   ",
+      }),
+    );
+    expect(res.status).toBe(303);
+    const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
+    expect(queries.getWorkOrder(id)?.due_at).toBeNull();
+  });
+
+  it("W5: PATCH due rejects the same overflow date POST now rejects", async () => {
+    const res = await PATCH(
+      new NextRequest("http://localhost:3000/api/work-orders/WO-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "due", due_date: "2026-02-30" }),
+      }),
+      { params: Promise.resolve({ id: "WO-1" }) },
+    );
+    expect(res.status).toBe(422);
+  });
+
+  it("W5: PATCH due now clears on whitespace-only, matching POST", async () => {
+    const res = await PATCH(
+      new NextRequest("http://localhost:3000/api/work-orders/WO-1", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "due", due_date: "   " }),
+      }),
+      { params: Promise.resolve({ id: "WO-1" }) },
+    );
+    expect(res.status).toBe(200);
+    expect(queries.getWorkOrder("WO-1")?.due_at).toBeNull();
   });
 });
 

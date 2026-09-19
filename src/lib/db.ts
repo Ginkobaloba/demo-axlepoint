@@ -109,7 +109,28 @@ export function resetDbIfDue(nowMs = Date.now()): boolean {
     // live database with no connection left to serve requests until the
     // next redeploy. Rename is atomic once the copy has fully landed.
     const tmp = `${DB_PATH}.reset-tmp`;
+    // Deep-verify PR #24 blocker B2. Two bugs, same root cause
+    // (fs.copyFileSync preserves the source file's permission bits):
+    //   1. The seed is intentionally read-only (Dockerfile chmod 444, so
+    //      nothing can accidentally write to it). Copying it straight onto
+    //      DB_PATH made the LIVE database read-only too, so every write
+    //      after the first reset 500'd with SQLITE_READONLY.
+    //   2. If a previous reset crashed mid-copy, it could leave a
+    //      read-only leftover tmp file; fs.copyFileSync opens the
+    //      destination for writing rather than recreating it, so it
+    //      cannot overwrite a read-only file and every later reset failed
+    //      with EACCES -- permanently, until a redeploy.
+    // Fixed by clearing any stale tmp first (rmSync deletes based on the
+    // directory's write permission, not the file's own mode, so this
+    // works even if the leftover is read-only), then chmodding the fresh
+    // copy back to a normal writable mode before the rename. The -wal and
+    // -shm sidecars are never copied (only DB_PATH is), so they are not
+    // affected by the seed's mode: removeSidecars above clears any old
+    // ones, and better-sqlite3 creates new ones from scratch against a
+    // writable DB_PATH once the rename below lands.
+    fs.rmSync(tmp, { force: true });
     fs.copyFileSync(SEED_DB_PATH, tmp);
+    fs.chmodSync(tmp, 0o644);
     fs.renameSync(tmp, DB_PATH);
     return true;
   } catch (err) {

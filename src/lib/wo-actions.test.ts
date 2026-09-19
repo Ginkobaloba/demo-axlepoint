@@ -58,6 +58,22 @@ describe("parseWorkOrderPatch", () => {
     });
   });
 
+  it("W5 (deep-verify PR #24): whitespace-only clears like empty; overflow dates are rejected", () => {
+    // Previously fell through to `new Date()` and 422'd, unlike an actual
+    // empty string, which cleared -- inconsistent for the same intent
+    // (POST /api/work-orders already trimmed and treated both the same).
+    expect(parseWorkOrderPatch({ action: "due", due_date: "   " })).toMatchObject({
+      ok: true,
+      action: { kind: "due", due_at: null },
+    });
+    // Previously accepted: `new Date()` silently rolls Feb 30 to March 2
+    // rather than rejecting it. isValidIsoDate's round-trip check catches
+    // this now, same as the schedule board already does.
+    expect(parseWorkOrderPatch({ action: "due", due_date: "2026-02-30" })).toMatchObject({
+      ok: false,
+    });
+  });
+
   it("validates add_part qty bounds", () => {
     expect(parseWorkOrderPatch({ action: "add_part", part_id: "PRT-0001", qty: 3 })).toMatchObject({
       ok: true,
