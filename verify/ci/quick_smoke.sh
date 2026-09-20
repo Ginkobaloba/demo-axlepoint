@@ -47,6 +47,20 @@ for i in $(seq 0 $((count-1))); do
   # a literal space, so a single space is a safe separator.
   probe="$(curl -sS -L -o "$bdy" -D "$hdr" -w '%{http_code} %{url_effective}' "$full")" || { echo "  FAIL curl error"; fail=1; rm -f "$hdr" "$bdy"; continue; }
   code="${probe%% *}"
+  # `landed` is where the request ENDED UP, and the two fleets derive it
+  # differently ON PURPOSE (agreed 2026-09-20, demos <-> portal-shell):
+  #   - Here: `curl -L` follows redirects, so the body the assertions run
+  #     against IS the final destination's, and %{url_effective} names the
+  #     page that was actually tested.
+  #   - portal-shell: `-L` was dropped because its `redirects_to`
+  #     implementation needs the raw first response, so `landed` comes from
+  #     the Location header and names the FIRST hop -- where the request
+  #     would have gone, not where anything was tested.
+  # Identical for a single hop; they differ on a redirect CHAIN (last hop
+  # here, first hop there). This is a DECLARED divergence, not drift.
+  # Converging the message strings without aligning the semantics would be
+  # a surface match; true convergence means agreeing whether to follow, and
+  # then the strings match for free.
   landed="${probe#* }"
   acount="$(yq -r ".surfaces[$i].assertions | length" "$SMOKE")"
   if yq -r ".surfaces[$i].assertions[].type" "$SMOKE" | grep -qx redirects_to; then redirect_declared=1; else redirect_declared=0; fi
