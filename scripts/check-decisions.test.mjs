@@ -43,7 +43,7 @@ describe("check-decisions", () => {
     ].join("\n");
     const problems = checkDecisions(text);
     expect(problems).toHaveLength(1);
-    expect(problems[0]).toMatch(/id 19 appears 2 times \(D-019 on line 4, D-019 on line 7\)/);
+    expect(problems[0]).toMatch(/id 99 appears 2 times \(D-019 on line 4, D-019 on line 7\)/);
   });
 
   it("reports every duplicated id, not just the first", () => {
