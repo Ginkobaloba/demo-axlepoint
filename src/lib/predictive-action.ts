@@ -59,7 +59,7 @@ function evidenceFor(factor: RiskFactor | null): string {
  * docs/demos/axlepoint/decisions.md D-012): POST /api/work-orders calls
  * this for type "predictive" instead of the generic
  * deriveWorkOrderTitle/DISCARDED_DESCRIPTION_NOTICE pair, so the demo's
- * headline workflow (D-007, "Recommend Preventive Action") still tells its
+ * headline workflow (D-017, "Recommend Preventive Action") still tells its
  * story even though nothing a visitor types is ever stored. Matches the
  * copy recommend-action.tsx previews client-side, since both read the same
  * ACTION_BY_SENSOR table and the same asset.risk_factors data.

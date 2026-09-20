@@ -1,5 +1,5 @@
 # .github/workflows/verify.yml
-# Last updated: 2026-06-26
+# Last updated: 2026-09-19
 #
 # BRANCH PROTECTION NOTE:
 # For the deep-verify gate to actually block merges, add "deep-verify" as a
@@ -7,6 +7,34 @@
 # (Settings > Branches > branch protection rule > "Require status checks to pass
 # before merging"). Without this, the job runs but GitHub will still allow merge
 # if it fails or is skipped.
+#
+# "Quick Verify (all PRs)" is the real PR gate: it runs npm ci, the
+# duplicate-decision-id check, typecheck, lint, the unit suite, and the
+# production build -- all against the PR's own code (2026-09-19). Before
+# this, the job named "Quick Verify" only ran the ledger check and the
+# deep-verify self-test plus a curl against the LIVE deployed site, so it
+# was structurally incapable of failing because of a PR's changes; a PR
+# that broke the build or reddened every test merged green. See
+# docs/demos/axlepoint/decisions.md D-021 and the "Live smoke" job below.
+#
+# No db:generate (seed) step before build: proved by deleting the
+# (gitignored) data/ directory and running `npm run build` from a clean
+# worktree. It succeeded -- every /app and /api route is dynamic
+# (server-rendered on demand), src/lib/db.ts's getDb() is only ever called
+# lazily from queries.ts (never at module load), and the only static
+# routes (/, /_not-found, /icon.svg) never import db.ts. Ported from
+# demo-harborbistro for this reason: its CI mirrors its own Dockerfile's
+# seed-then-build order because ITS build does read the seeded DB;
+# axlepoint's Dockerfile also generates before building, but only to ship
+# the generated database inside the runtime image, not because the build
+# step reads it. Same finding, same reasoning as demo-slatewell's D-020.
+#
+# "Live smoke (deployed site)" is NOT a gate on this PR. It curls
+# verify/smoke.yml's deploy_url, i.e. whatever is already running in
+# production, and says nothing about the code in this PR or this branch.
+# Never make it a required status check on that basis; if you want a real
+# preview-environment smoke test, that is separate, larger work (standing
+# up a per-PR preview deploy), not this job.
 #
 # WINDOWS / HEADED NOTE:
 # The headed layer (Layer 5, Windows MCP / computer-use) and adversarial generation
@@ -29,11 +57,50 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://npm.pkg.github.com
+          scope: '@paradigm-codes'
+
+      # NODE_AUTH_TOKEN is read by the .npmrc actions/setup-node just wrote
+      # to the user config (registry-url + scope above); npm interpolates it
+      # itself. The token is never echoed, never written by a step of ours,
+      # and never appears on a command line.
+      - name: Install dependencies (npm ci)
+        run: npm ci
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+
       - name: Check ledger
         run: npm run ledger:check
 
+      - name: Check docs/demos/axlepoint/decisions.md for duplicate decision ids
+        run: node scripts/check-decisions.mjs
+
+      - name: Typecheck
+        run: npx tsc --noEmit --extendedDiagnostics
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
       - name: Test the deep-verify gate (offline)
         run: bash verify/ci/test_deep_gate.sh
+
+  live-smoke:
+    name: Live smoke (deployed site)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Install yq
         run: |
@@ -41,7 +108,9 @@ jobs:
             https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           sudo chmod +x /usr/local/bin/yq
 
-      - name: Run quick smoke against verify/smoke.yml
+      # This hits verify/smoke.yml's deploy_url -- the LIVE deployed site,
+      # not this PR's code. It cannot fail because of anything in this PR.
+      - name: Run smoke against verify/smoke.yml (production, not this PR)
         run: bash verify/ci/quick_smoke.sh verify/smoke.yml
 
   deep-verify:

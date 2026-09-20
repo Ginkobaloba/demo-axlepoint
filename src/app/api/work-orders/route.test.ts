@@ -452,7 +452,7 @@ describe("POST /api/work-orders -- the demo flow still works end to end", () => 
     expect(res.headers.get("location")).toContain("error=");
   });
 
-  it("still supports the assign -> status closed-loop patch flow (D-007)", async () => {
+  it("still supports the assign -> status closed-loop patch flow (D-017)", async () => {
     const createRes = await POST(
       formRequest({
         asset_id: "AST-01",

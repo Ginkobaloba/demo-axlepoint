@@ -111,7 +111,7 @@ Tier 2 additive: no existing behavior changes. Shipping is safe even
 if the portal subdomain is mid-deploy because the JWKS fetch is
 lazy-on-first-handoff and the demo cookie path is unaffected.
 
-## D-006: Work-order titles are screened at the create endpoint
+## D-016: Work-order titles are screened at the create endpoint
 
 The seed generator never produces junk, but POST /api/work-orders is open and
 the running container persists drafts until the next redeploy (D-005). Ad-hoc
@@ -124,7 +124,7 @@ form posts. The clean seed plus this guard means a redeploy clears the
 existing junk and nothing of that shape can re-accumulate. Note: the junk was
 runtime-only state, not a seed defect, so no generator change was needed.
 
-## D-007: Work orders are writable end-to-end (closed loop)
+## D-017: Work orders are writable end-to-end (closed loop)
 
 The headline workflow drafts a predictive work order via "Recommend
 Preventive Action", but the drafted order was a dead end -- no way to assign,
@@ -139,7 +139,7 @@ inventory stock -- consumption against on-hand is owned by the reorder/PO flow
 so the two paths never double-count. Writes are container-local and reset on
 redeploy, same contract as createWorkOrder (D-005).
 
-## D-008: portal-handoff handler extracted out of the route file
+## D-018: portal-handoff handler extracted out of the route file
 
 The portal-handoff route exported a makeHandler factory (so tests could inject
 a stub VerifierConfig). Next.js 14 App Router route modules may only export
@@ -151,7 +151,7 @@ is unchanged and the existing integration tests pass against the moved module.
 A second breaker (an unused UnknownKid import in portal-verify.test.ts) was
 also removed. With both gone, main builds clean and the demo is redeployable.
 
-## D-009: Big tables are client-side searchable/sortable/filterable
+## D-019: Big tables are client-side searchable/sortable/filterable
 
 Work Orders (150+ rows) and Parts (80 SKUs) were read-only server tables with
 no search, sort, or filtering. Both now render through client components
@@ -165,7 +165,7 @@ search (id/title/asset/tech), status tabs, and type/priority filters; Parts
 gets search (name/sku/category/supplier), category, and stock-status filters.
 A "Showing N of M" line keeps the active filter honest.
 
-## D-010: Purchase-order entity closes the parts reorder loop
+## D-020: Purchase-order entity closes the parts reorder loop
 
 The Parts table flagged "Reorder needed" with nowhere to go. Added a real
 purchase-order entity: two tables (purchase_orders, purchase_order_lines)
@@ -178,7 +178,7 @@ draft -> ordered -> received (pure transition rules in src/lib/po-actions.ts,
 unit-tested); ordering projects an expected-arrival date from the longest line
 lead time, and RECEIVING is the one place inventory stock is incremented (the
 counterpart to attaching parts to work orders, which deliberately does not
-touch stock -- D-007). The parts<->WO link is closed both ways: a part detail
+touch stock -- D-017). The parts<->WO link is closed both ways: a part detail
 page (/app/parts/[id]) lists the work orders consuming it and the POs that
 include it; work orders already showed their parts. Verified end-to-end:
 create reorder -> 5 low parts became 3 supplier POs -> receive one -> the 3
@@ -228,7 +228,7 @@ in-memory per-browser-id store): **server writes with no free text
 persisted**, not client-side-only state. AxlePoint's work-order pages are
 server-rendered SQL joins (queries.ts joins work_orders/assets/technicians);
 making the closed-loop workflow (create -> assign -> schedule -> attach
-parts -> close, D-007) client-side-only would mean duplicating that join
+parts -> close, D-017) client-side-only would mean duplicating that join
 logic in the browser and inventing a client-only detail route -- a
 rearchitecture, not a fix, for a two-column problem. Storing no free text
 keeps every existing page, query, and test working unchanged.
@@ -236,7 +236,7 @@ keeps every existing page, query, and test working unchanged.
 Concretely (src/app/api/work-orders/route.ts, src/lib/work-order-validation.ts):
 screenWorkOrderTitle still validates the shape of what a visitor typed (junk
 titles like "Test" or "JSON API test order" still get rejected with the same
-UX as before, D-006's screen), but the literal string is discarded either
+UX as before, D-016's screen), but the literal string is discarded either
 way. What lands in the title column is deriveWorkOrderTitle(asset.name,
 type) -- "Preventive - Meridian V12T #04" -- built only from the asset and
 type the route already validated as real, structured values. The description
@@ -279,7 +279,7 @@ in-memory, is the kind of identity concept this fix is explicitly removing,
 and it was not needed once the free text itself is never stored.
 
 Headline flow, preserved rather than flattened: "Recommend Preventive
-Action" (D-007) is the one demo flow a prospect is walked through, and a
+Action" (D-017) is the one demo flow a prospect is walked through, and a
 first pass of this fix would have reduced its drafted work order to the
 same generic "Predictive - <asset>" title every other type gets, losing
 the sensor-specific recommendation story. src/lib/predictive-action.ts
@@ -319,7 +319,7 @@ output exactly (not the markers), covering the headline-flow fix. Further
 tests cover the create -> read flow and the existing junk-title rejection,
 and drive PATCH /api/work-orders/[id] through assign -> in_progress ->
 closed to confirm the technician-assignment and status-transition path
-(D-007's closed loop) still works end to end.
+(D-017's closed loop) still works end to end.
 
 ## D-012 addendum (2026-09-19): assigned_to was not actually structured -- deep-verify blocker B1
 
@@ -611,3 +611,75 @@ old code also handled correctly). Restored src/middleware.ts from a
 pristine copy taken before the mutation; diff against that copy showed
 no difference; git status showed only the intended files changed before
 committing.
+
+## D-021: Quick Verify (all PRs) became a real gate; fixed a real D-006..D-010 collision found while wiring it (2026-09-19)
+
+.github/workflows/verify.yml ran no tests, no build, and no typecheck.
+Its one behavioural-looking step curled the LIVE deployed site
+(verify/smoke.yml deploy_url), not the PR's code, so the job named
+"Quick Verify (all PRs)" was structurally incapable of failing because
+of a PR's changes. Ported the pattern proven in demo-harborbistro
+(origin/main b205dec, PR #42) and demo-slatewell (PR #43): Quick Verify
+now runs npm ci (auth via secrets.PACKAGES_TOKEN through
+actions/setup-node's registry-url/NODE_AUTH_TOKEN form, never written to
+a file or command line), the duplicate-decision-id check, tsc --noEmit,
+npm run lint, npm test (vitest; picks up scripts/*.test.mjs and every
+src/**/*.test.ts already, no separate wiring needed), and npm run build
+-- all against the PR's own checkout. The old smoke step is split into
+its own non-required job, "Live smoke (deployed site)", so its name
+states plainly that it tests production, not this PR.
+
+No db:generate step before build: proved by deleting the (gitignored,
+never-committed) data/ directory and running npm run build from a clean
+worktree. Build succeeded (exit 0); every /app and /api route is dynamic
+(server-rendered on demand) except `/`, `/_not-found`, and `/icon.svg`,
+which are static and do not import src/lib/db.ts. src/lib/db.ts's
+getDb() is called lazily from queries.ts, never at module load, so
+next build never touches it. This matches slatewell's finding and
+differs from demo-harborbistro, whose build genuinely does read its
+seeded DB. The Dockerfile still runs `npm run db:generate && npm run
+build` in that order, but that order exists to ship the generated
+database inside the runtime image, not because the build step reads it.
+
+scripts/check-decisions.mjs is ported from demo-harborbistro
+byte-close, with two adaptations proven necessary rather than assumed:
+
+1. DEFAULT_PATH points at docs/demos/axlepoint/decisions.md, this
+   repo's actual decision log location, not docs/decisions.md (which
+   does not exist here).
+2. HEADING_RE gained a narrow negative lookahead so a "## D-<n>
+   addendum (...)" heading -- this repo's own convention for revisiting
+   an existing decision under its original id, used twice already for
+   D-012 -- is not flagged as a second claim on that id. The exemption
+   is narrow: a heading that reuses an id with any other trailing text
+   (no colon, some other word) still counts and is still flagged
+   (covered by a dedicated test).
+
+Wiring the check up against the real file immediately found a genuine,
+pre-existing collision: a later wave of decisions restarted numbering
+at D-006 instead of continuing after D-005, so D-006 through D-010 were
+each claimed twice by unrelated decisions (the first wave: demo auth,
+fictional data, MTBF windows, the Paradigm banner port, portal
+federation; the second wave: work-order title screening, the writable
+work-order closed loop, the portal-handoff handler extraction, the
+searchable/sortable tables, and the purchase-order entity). Nothing
+else in this repo's CI would have caught it -- same shape as the
+2026-09-19 D-019 incident in demo-harborbistro that motivated this
+checker, just already latent here. Fixed by renumbering the second
+wave's five headings to D-016 through D-020 (the next free ids, after
+D-013/D-014/D-015 which already existed) and updating every internal
+cross-reference and the two code comments that named the old numbers
+(src/app/api/work-orders/route.test.ts, src/lib/predictive-action.ts)
+by reading each reference's surrounding text to confirm which wave it
+actually meant, not by pattern-matching the digits alone.
+
+Verified: node scripts/check-decisions.mjs run directly against the
+real, now-renumbered file reports 20 unique ids and 0 problems.
+npm test (including the new check-decisions.test.mjs, 9 cases: the 7
+ported from demo-harborbistro plus 2 for the addendum exemption),
+tsc --noEmit, npm run lint, and npm run build were all run clean in a
+fresh worktree before this workflow was wired up. Each Quick Verify
+step was additionally proven able to fail on a throwaway branch (one
+step broken at a time, based on this feature branch, reverted after);
+see the PR body for the run links.
+
