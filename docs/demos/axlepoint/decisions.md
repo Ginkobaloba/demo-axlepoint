@@ -683,5 +683,3 @@ step was additionally proven able to fail on a throwaway branch (one
 step broken at a time, based on this feature branch, reverted after);
 see the PR body for the run links.
 
-
-## D-016: duplicate heading inserted for break-testing only
