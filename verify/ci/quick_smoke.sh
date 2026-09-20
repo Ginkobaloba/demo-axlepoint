@@ -7,9 +7,18 @@
 #
 # redirects_to is NOT one of those layers. curl already follows redirects and
 # reports the URL it ended on, so the assertion is checkable here, and it has
-# to be: the gated surfaces assert that an anonymous client is bounced to the
-# sign-in page, and an assertion that silently skips proves nothing. It used
-# to fall through to the skip branch below.
+# to be: it used to fall through to the skip branch below, which meant every
+# redirect assertion in verify/smoke.yml silently proved nothing.
+#
+# A surface that redirects but declares no redirects_to assertion is a
+# structural gap, not a passing surface: curl -L quietly follows the
+# redirect, and every text_present/header_present assertion below would then
+# run against the page it landed on instead of the page the surface names.
+# That is invisible from reading the config, and it stays green right up
+# until the day a surface that used to be direct starts redirecting. Guard
+# it here: if the landed URL differs from the requested one and this surface
+# declares no redirects_to assertion, fail before any other assertion runs,
+# so nothing downstream can pass against the wrong page.
 set -uo pipefail
 
 SMOKE="${1:-verify/smoke.yml}"
@@ -40,6 +49,13 @@ for i in $(seq 0 $((count-1))); do
   code="${probe%% *}"
   landed="${probe#* }"
   acount="$(yq -r ".surfaces[$i].assertions | length" "$SMOKE")"
+  if yq -r ".surfaces[$i].assertions[].type" "$SMOKE" | grep -qx redirects_to; then redirect_declared=1; else redirect_declared=0; fi
+  if [ "$redirect_declared" = "0" ] && [ "$landed" != "$full" ]; then
+    echo "  FAIL undeclared redirect: requested $full, landed on $landed. Declare a redirects_to assertion for this surface's expected destination, or point its url at $landed directly."
+    fail=1
+    rm -f "$hdr" "$bdy"
+    continue
+  fi
   for j in $(seq 0 $((acount-1))); do
     atype="$(yq -r ".surfaces[$i].assertions[$j].type" "$SMOKE")"
     case "$atype" in
@@ -54,9 +70,8 @@ for i in $(seq 0 $((count-1))); do
         if grep -qF "$t" "$bdy"; then echo "  ok text present"; else echo "  FAIL missing text: $t"; fail=1; fi;;
       redirects_to)
         exp="$(yq -r ".surfaces[$i].assertions[$j].expect" "$SMOKE")"
-        # Accept either convention already in use across the demo repos: a
-        # bare path (this repo) or a fully-qualified URL (lumen-analytics,
-        # demo-slatewell). A path is resolved against deploy_url.
+        # Accept either convention in use across the demo repos: a fully
+        # qualified URL or a bare path, resolved against deploy_url.
         case "$exp" in /*) exp="${deploy_url}${exp}";; esac
         if [ "$landed" = "$exp" ]; then echo "  ok redirects_to $exp"; else echo "  FAIL redirects_to expected $exp got $landed"; fail=1; fi;;
       *) echo "  skip $atype (browser-layer, covered in deep verify)";;
