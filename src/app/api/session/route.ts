@@ -37,3 +37,9 @@ export async function POST(request: NextRequest) {
   });
   return response;
 }
+
+// break-test: route modules may only export HTTP method handlers plus a
+// fixed config set; this named export fails Next's generated route-type
+// check at build time even though it is valid, unused TypeScript and
+// triggers no lint rule.
+export const breakTestInvalidRouteExport = 1;
