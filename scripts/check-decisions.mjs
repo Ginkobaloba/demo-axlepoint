@@ -1,56 +1,43 @@
 #!/usr/bin/env node
-// Duplicate decision-id guard for docs/demos/axlepoint/decisions.md.
+// Duplicate decision-id guard for a repo's decisions log.
 //
-// Two branches each adding "## D-019: ..." merge cleanly with NO conflict
-// (they touch different lines, both appended near the end), and GitHub sees
-// no reason to complain. That happened for real in demo-harborbistro on
-// 2026-09-19 (two PRs both claimed D-019) and, independently, ALREADY
-// HAPPENED HERE: this file's D-006 through D-010 were each claimed twice --
-// a second wave of council items restarted numbering from D-006 instead of
-// continuing after D-005. This script found that while being ported in and
-// the collision was fixed in the same change (D-018) that added this file,
-// by renumbering the second wave to D-013..D-017. Nothing else in this
-// repo's CI would have caught either shape -- the ledger check validates
-// docs/ledger/, not docs/demos/axlepoint/decisions.md, and there is no code
-// path that reads a decision id and would fail on a collision.
+// Two branches each adding "## D-019: ..." to a decisions log merge
+// cleanly with NO conflict (they touch different lines, both appended
+// near the end), and GitHub sees no reason to complain. That happened for
+// real in demo-harborbistro on 2026-09-19: two PRs both claimed D-019.
+// Nothing else in CI reads a decision id and would fail on a collision --
+// this is the only thing that catches it.
 //
-// This script is the check: every `## D-<digits>` heading in
-// docs/demos/axlepoint/decisions.md must have a unique id. Run:
-//   node scripts/check-decisions.mjs [path-to-decisions.md]
+// This script is the check: every `## D-<digits>` heading in the given
+// decisions log must have a unique id. Run:
+//   node scripts/check-decisions.mjs <path-to-decisions.md>
 //
-// Ported from demo-harborbistro (origin/main b205dec), which keys
-// docs/decisions.md at the repo root. This repo's decision log instead
-// lives at docs/demos/axlepoint/decisions.md (docs/demos/<name>/... is the
-// convention for this repo's per-demo docs), so DEFAULT_PATH below points
-// there instead -- the only path-shaped difference from harbor's version.
-//
-// Second adaptation: this file has an established "addendum" convention
-// harbor's doesn't -- a later update to an existing decision is logged as
-// "## D-012 addendum (2026-09-19): ..." under the SAME id, on purpose,
-// rather than minting a new id (see the two D-012 addenda below D-012
-// itself). That is not a collision; it is the file's way of recording that
-// a decision was revisited. HEADING_RE excludes exactly that pattern via a
-// negative lookahead, so it still flags any other non-addendum reuse of an
-// id (including a heading with no colon at all, like a malformed one) --
-// the exemption is narrow, not "skip anything without a colon."
+// The path is required and repo-specific: each repo keeps its decisions
+// log at its own location and passes that path from its own call sites
+// (the CI step that runs this file). There is deliberately no built-in
+// default path -- a default is exactly the kind of repo-specific state
+// this shared script must not carry, and a missing, wrong, or omitted
+// path must fail loudly rather than silently check nothing.
 //
 // Also run by npm test (see check-decisions.test.mjs), which covers the
 // function in isolation. The CI step runs this file directly against the
-// real docs/demos/axlepoint/decisions.md, because a check that only
-// exercises a synthetic fixture is not proof the real file passes.
+// real decisions log, because a check that only exercises a synthetic
+// fixture is not proof the real file passes.
 
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const DEFAULT_PATH = join(ROOT, "docs", "demos", "axlepoint", "decisions.md");
 
-// Matches "## D-<digits>" UNLESS immediately followed by whitespace then the
-// word "addendum" (this repo's documented "revisit the same decision"
-// convention, not a new claim on the id). The `\b` keeps normal headings
-// like "## D-001: ..." matching exactly as before; the lookahead is the
-// only thing narrower than a plain `\b`.
+// Matches "## D-<digits>" UNLESS immediately followed by whitespace then
+// the word "addendum" -- some repos record a later revisit of an existing
+// decision as "## D-012 addendum (...): ..." under the SAME id on purpose,
+// rather than minting a new id. That is not a collision. The `\b` keeps
+// normal headings like "## D-001: ..." matching exactly as before; the
+// lookahead is the only thing narrower than a plain `\b`, so it still
+// flags any other non-addendum reuse of an id (including a heading with
+// no colon at all).
 const HEADING_RE = /^## D-(\d+)\b(?!\s+addendum\b)/;
 
 /**
@@ -100,13 +87,18 @@ export function checkDecisions(text, label = "decisions.md") {
   return problems;
 }
 
-export function runCheck(path = DEFAULT_PATH, log = console.log, err = console.error) {
-  const label = relative(ROOT, path) || path;
-  if (!existsSync(path)) {
+export function runCheck(path, log = console.log, err = console.error) {
+  if (!path) {
+    err("decisions: no path given; usage: node scripts/check-decisions.mjs <path-to-decisions.md>");
+    return 1;
+  }
+  const resolved = resolve(process.cwd(), path);
+  const label = relative(ROOT, resolved) || resolved;
+  if (!existsSync(resolved)) {
     err(`decisions: ${label} does not exist; nothing was checked`);
     return 1;
   }
-  const text = readFileSync(path, "utf8");
+  const text = readFileSync(resolved, "utf8");
   const problems = checkDecisions(text, label);
   for (const p of problems) err(`decisions: ${p}`);
   const idCount = parseHeadingIds(text).size;
@@ -115,7 +107,7 @@ export function runCheck(path = DEFAULT_PATH, log = console.log, err = console.e
 }
 
 function main([path]) {
-  return runCheck(path ? join(process.cwd(), path) : DEFAULT_PATH);
+  return runCheck(path);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

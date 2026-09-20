@@ -2,6 +2,8 @@
 
 Decision log for the AxlePoint demo build. Format: ID, decision, rationale.
 
+Note: D-006..D-010 were each claimed twice until 2026-09-19; the second wave is now D-016..D-020. See D-021.
+
 ## D-001: Sensor history resolution is tiered, not uniform hourly
 
 The brief calls for 6 months of hourly readings per asset (~26M rows). The
