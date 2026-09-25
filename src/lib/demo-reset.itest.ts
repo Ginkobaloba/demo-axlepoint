@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Pool, type PoolClient } from "pg";
+import { refuseIfNotOurDatabase } from "@/lib/scratch-db-guard";
 import { resetTenantFromPristine } from "@/lib/demo-reset";
 
 /**
@@ -51,6 +52,7 @@ beforeAll(async () => {
     }
   }
   admin = new Pool({ connectionString: url });
+  await refuseIfNotOurDatabase((sql) => admin.query(sql));
   await admin.query(
     fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"),
   );
