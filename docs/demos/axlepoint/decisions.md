@@ -885,3 +885,66 @@ it.** Merging is safe: `next build` never reads the database (proved by deletion
 see verify.yml), every route is `force-dynamic`, and the live demo keeps serving
 its existing image -- merged is not deployed. But the next deploy needs
 `DATABASE_URL`, and `pg.ts` fails loudly without one rather than falling back.
+
+## D-025: The seed generator writes to Postgres, and the data is provably unchanged (2026-09-25)
+
+`scripts/generate-db.ts` now seeds a tenant in Postgres instead of writing a
+SQLite file. The SQLite modules (`src/lib/db.ts`, its test, the SQLite fixture)
+are DELIBERATELY LEFT IN PLACE -- see "what is not done" below.
+
+**An adapter, not a rewrite, and the reason is verification.** The generator is
+1061 lines of which 28 touched the database; the rest computes the demo world.
+`scripts/lib/pg-sink.ts` presents the same `prepare().run()` surface, collects
+rows and flushes them in chunked multi-row INSERTs, so **every line of
+generation logic is byte-identical**. That turned "did the port change the
+data?" from a code-review argument into a measurement.
+
+**The measurement.** With `AXLEPOINT_NOW_TS` pinning the time anchor (new, and
+the reason it was added), the SQLite generator and the Postgres generator were
+run against the same anchor and compared field by field, sorted, with numeric
+normalisation:
+
+    meta 3, assets 100, technicians 15, parts 80, work_orders 150,
+    work_order_parts 166, maintenance_schedule 147, purchase_orders 13,
+    purchase_order_lines 33, sensor_readings 543981, anomalies 1241
+    -> EVERY TABLE IDENTICAL   (545,929 rows)
+
+Counts alone would not have shown this: a port that got every `risk_score`
+subtly wrong produces identical counts. The acceptance criteria in CLAUDE.md
+also pass -- critical=4 (sane is 3-6), distinct top scores 95/90/89, MTBF delta
+-19% (within +/-35%).
+
+**The sink is narrow and LOUD.** It understands the exact statements the
+generator issues -- INSERT, one UPDATE, one read-back SELECT -- and THROWS on
+anything else. A sink that ignored an unrecognised statement would produce a
+database missing whatever that statement did, while the generator printed its
+cheerful summary. For the same reason the summary is read back FROM POSTGRES
+after the flush, and every table's stored count is compared against what was
+built; printing the intended numbers would restate the plan rather than
+evidence the result.
+
+**The image is now stateless.** `npm run db:generate` left the Dockerfile build
+step: it writes over `DATABASE_URL`, which must not exist during a docker build,
+because a build that can reach a database is a build that can seed the wrong
+one. **Seeding is a deploy step now, not a build step.**
+
+### What is NOT done, stated plainly because it is a control being deferred
+
+**The 6-hourly visitor-data reset does not exist on the Postgres path.** On
+SQLite it was a file copy from a pristine snapshot (old `src/lib/db.ts`), and it
+was not a convenience: D-012 relies on it so that visitor-entered text cannot
+outlive one interval. It has no Postgres implementation yet.
+
+So `src/lib/db.ts`, `src/lib/db.test.ts` and the SQLite fixture are **kept, not
+deleted**, even though nothing on the app's path uses them. Deleting them in
+this change would have removed a privacy control and its tests before the
+replacement existed, and "we will do it next" is exactly how that becomes
+permanent. They go when the Postgres reset lands, in the same change.
+
+The reset design has one real constraint worth recording now: restoring tenant
+`sample` from a pristine copy means reading one tenant and writing another in
+ONE transaction, which RLS forbids for the app role (`app.tenant_id` is a single
+value). The options are a `SECURITY DEFINER` function owned by the table owner
+(with `search_path` pinned, or it is a privilege-escalation vector), or a
+separate reset role. **Giving the app role BYPASSRLS is not an option** -- that
+is exactly the hazard D-023 removed.

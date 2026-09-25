@@ -20,9 +20,10 @@
  * files: a developer running `npm run db:generate` after touching
  * anomaly.ts/risk.ts gets a matching seed snapshot for free.
  */
-import Database from "better-sqlite3";
 import fs from "fs";
 import path from "path";
+import { Pool } from "pg";
+import { PgSink } from "./lib/pg-sink";
 import { Rng } from "../src/lib/rng";
 import {
   initState,
@@ -40,16 +41,26 @@ import {
   type SensorType,
 } from "../src/lib/types";
 
-const OUT_DIR = path.join(process.cwd(), "data");
-const OUT_PATH = path.join(OUT_DIR, "axlepoint.db");
-const SEED_OUT_PATH = path.join(OUT_DIR, "axlepoint.seed.db");
+const SCHEMA_PATH = path.join(process.cwd(), "db", "schema.sql");
 
 const rng = new Rng(0x41584c45); // "AXLE"
 
 // ---------------------------------------------------------------- time grid
 
 const HOUR = 3600;
-const nowTs = Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+// The anchor is hour-truncated, so two runs in the same hour already produce
+// identical data (the rng seed is fixed). AXLEPOINT_NOW_TS makes that
+// independent of the wall clock, which is what lets the Postgres port be
+// verified by DIFFING its output against the SQLite generator's rather than
+// eyeballing the demo. Also useful for any test that wants a fixed world.
+const nowTs = process.env.AXLEPOINT_NOW_TS
+  ? Math.floor(Number(process.env.AXLEPOINT_NOW_TS) / HOUR) * HOUR
+  : Math.floor(Date.now() / 1000 / HOUR) * HOUR;
+if (!Number.isFinite(nowTs) || nowTs <= 0) {
+  throw new Error(
+    `AXLEPOINT_NOW_TS is not a usable epoch-seconds value: ${process.env.AXLEPOINT_NOW_TS}`,
+  );
+}
 const DAYS_TOTAL = 183;
 const DAYS_HOURLY = 14;
 const startTs = nowTs - DAYS_TOTAL * 24 * HOUR;
@@ -253,132 +264,11 @@ const degradation = new Map<string, Degradation>();
 
 // ---------------------------------------------------------------- database
 
-fs.mkdirSync(OUT_DIR, { recursive: true });
-fs.rmSync(OUT_PATH, { force: true });
-fs.rmSync(`${OUT_PATH}-wal`, { force: true });
-fs.rmSync(`${OUT_PATH}-shm`, { force: true });
-
-const db = new Database(OUT_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("synchronous = OFF");
-
-db.exec(`
-CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-
-CREATE TABLE assets (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  type TEXT NOT NULL,
-  model TEXT NOT NULL,
-  serial TEXT NOT NULL,
-  location TEXT NOT NULL,
-  installed_on TEXT NOT NULL,
-  run_hours INTEGER NOT NULL,
-  status TEXT NOT NULL,
-  criticality TEXT NOT NULL,
-  risk_score REAL NOT NULL,
-  risk_band TEXT NOT NULL,
-  risk_factors TEXT NOT NULL
-);
-
-CREATE TABLE sensor_readings (
-  asset_id TEXT NOT NULL,
-  sensor_type TEXT NOT NULL,
-  ts INTEGER NOT NULL,
-  value REAL NOT NULL
-);
-CREATE INDEX idx_readings ON sensor_readings(asset_id, sensor_type, ts);
-
-CREATE TABLE anomalies (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  asset_id TEXT NOT NULL,
-  sensor_type TEXT NOT NULL,
-  ts INTEGER NOT NULL,
-  value REAL NOT NULL,
-  z_score REAL NOT NULL,
-  severity TEXT NOT NULL,
-  note TEXT NOT NULL
-);
-CREATE INDEX idx_anomalies_asset ON anomalies(asset_id, ts);
-CREATE INDEX idx_anomalies_ts ON anomalies(ts);
-
-CREATE TABLE work_orders (
-  id TEXT PRIMARY KEY,
-  asset_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  description TEXT NOT NULL,
-  status TEXT NOT NULL,
-  priority TEXT NOT NULL,
-  type TEXT NOT NULL,
-  assigned_to TEXT,
-  created_at INTEGER NOT NULL,
-  due_at INTEGER,
-  completed_at INTEGER
-);
-CREATE INDEX idx_wo_asset ON work_orders(asset_id);
-CREATE INDEX idx_wo_status ON work_orders(status);
-
-CREATE TABLE parts (
-  id TEXT PRIMARY KEY,
-  sku TEXT NOT NULL,
-  name TEXT NOT NULL,
-  category TEXT NOT NULL,
-  qty_on_hand INTEGER NOT NULL,
-  reorder_point INTEGER NOT NULL,
-  unit_cost REAL NOT NULL,
-  lead_time_days INTEGER NOT NULL,
-  supplier TEXT NOT NULL
-);
-
-CREATE TABLE work_order_parts (
-  work_order_id TEXT NOT NULL,
-  part_id TEXT NOT NULL,
-  qty INTEGER NOT NULL
-);
-
-CREATE TABLE technicians (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  role TEXT NOT NULL,
-  location TEXT NOT NULL,
-  certifications TEXT NOT NULL,
-  phone TEXT NOT NULL,
-  email TEXT NOT NULL,
-  hired_on TEXT NOT NULL
-);
-
-CREATE TABLE maintenance_schedule (
-  id TEXT PRIMARY KEY,
-  asset_id TEXT NOT NULL,
-  task TEXT NOT NULL,
-  interval_days INTEGER NOT NULL,
-  next_due TEXT NOT NULL,
-  assigned_to TEXT,
-  est_hours REAL NOT NULL
-);
-
-CREATE TABLE purchase_orders (
-  id TEXT PRIMARY KEY,
-  supplier TEXT NOT NULL,
-  status TEXT NOT NULL,
-  created_at INTEGER NOT NULL,
-  ordered_at INTEGER,
-  expected_at INTEGER,
-  received_at INTEGER,
-  notes TEXT
-);
-
-CREATE TABLE purchase_order_lines (
-  po_id TEXT NOT NULL,
-  part_id TEXT NOT NULL,
-  qty INTEGER NOT NULL,
-  unit_cost REAL NOT NULL,
-  -- One line per part per PO. The reorder total and the receive-restock both
-  -- assume this; the constraint enforces it rather than trusting convention.
-  UNIQUE (po_id, part_id)
-);
-CREATE INDEX idx_po_lines ON purchase_order_lines(po_id);
-`);
+// The schema lives in db/schema.sql and is applied before this runs. The
+// SQLite DDL that used to sit here was deleted rather than left as a comment:
+// a second copy of a schema is a second SOURCE of it, and the two drift.
+const TENANT = process.env.AXLEPOINT_SEED_TENANT ?? "sample";
+const db = new PgSink(TENANT);
 
 // ------------------------------------------------ readings + anomaly pass
 
@@ -1014,48 +904,98 @@ db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run(
   String(nowTs),
 );
 
-// ----------------------------------------------------------------- summary
+// -------------------------------------------------------- write, then verify
 
-const counts = {
-  assets: db.prepare("SELECT COUNT(*) c FROM assets").get() as { c: number },
-  readings: db.prepare("SELECT COUNT(*) c FROM sensor_readings").get() as {
-    c: number;
-  },
-  anomalies: db.prepare("SELECT COUNT(*) c FROM anomalies").get() as {
-    c: number;
-  },
-  anomalies7d: db
-    .prepare("SELECT COUNT(*) c FROM anomalies WHERE ts >= ?")
-    .get(sevenDaysAgo) as { c: number },
-  wos: db.prepare("SELECT COUNT(*) c FROM work_orders").get() as { c: number },
-  parts: db.prepare("SELECT COUNT(*) c FROM parts").get() as { c: number },
-  lowStock: db
-    .prepare("SELECT COUNT(*) c FROM parts WHERE qty_on_hand < reorder_point")
-    .get() as { c: number },
-  pm: db.prepare("SELECT COUNT(*) c FROM maintenance_schedule").get() as {
-    c: number;
-  },
-  bands: db
-    .prepare(
-      "SELECT risk_band, COUNT(*) c FROM assets GROUP BY risk_band ORDER BY c",
-    )
-    .all() as { risk_band: string; c: number }[],
-};
+/**
+ * The summary is read back FROM POSTGRES after the flush, not from the
+ * in-memory rows. Printing what we intended to write would make the output a
+ * restatement of the plan rather than evidence of the result -- and a flush
+ * that silently dropped a table would still print a healthy-looking report.
+ */
+async function main(): Promise<void> {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set. The generator writes to Postgres now; there is " +
+        "no default, because a fallback would silently seed whichever database " +
+        "happened to be reachable. See docker-compose.dev.yml.",
+    );
+  }
 
-db.pragma("wal_checkpoint(TRUNCATE)");
-db.close();
+  const pool = new Pool({ connectionString: url });
+  const client = await pool.connect();
+  try {
+    if (process.env.AXLEPOINT_SKIP_SCHEMA !== "1") {
+      // Applying the schema drops and recreates public, so it is opt-out for
+      // the case where the caller has already prepared the database.
+      await client.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+      await client.query(fs.readFileSync(SCHEMA_PATH, "utf8"));
+    }
 
-fs.copyFileSync(OUT_PATH, SEED_OUT_PATH);
+    const intended = db.counts();
+    await db.flush(client);
 
-console.log("Database generated:", OUT_PATH);
-console.log("Seed snapshot written:", SEED_OUT_PATH);
-console.log(`  assets:        ${counts.assets.c}`);
-console.log(`  readings:      ${counts.readings.c}`);
-console.log(`  anomalies:     ${counts.anomalies.c} (${counts.anomalies7d.c} in last 7d)`);
-console.log(`  work orders:   ${counts.wos.c}`);
-console.log(`  parts:         ${counts.parts.c} (${counts.lowStock.c} below reorder)`);
-console.log(`  pm tasks:      ${counts.pm.c}`);
-console.log(
-  "  risk bands:    " +
-    counts.bands.map((b) => `${b.risk_band}=${b.c}`).join(", "),
-);
+    const q = async (sql: string, params: unknown[] = []) =>
+      Number((await client.query(sql, params)).rows[0].c);
+
+    const counts = {
+      assets: await q("SELECT COUNT(*)::int c FROM assets WHERE tenant_id = $1", [TENANT]),
+      readings: await q("SELECT COUNT(*)::int c FROM sensor_readings WHERE tenant_id = $1", [TENANT]),
+      anomalies: await q("SELECT COUNT(*)::int c FROM anomalies WHERE tenant_id = $1", [TENANT]),
+      anomalies7d: await q(
+        "SELECT COUNT(*)::int c FROM anomalies WHERE tenant_id = $1 AND ts >= $2",
+        [TENANT, sevenDaysAgo],
+      ),
+      wos: await q("SELECT COUNT(*)::int c FROM work_orders WHERE tenant_id = $1", [TENANT]),
+      parts: await q("SELECT COUNT(*)::int c FROM parts WHERE tenant_id = $1", [TENANT]),
+      lowStock: await q(
+        "SELECT COUNT(*)::int c FROM parts WHERE tenant_id = $1 AND qty_on_hand < reorder_point",
+        [TENANT],
+      ),
+      pm: await q("SELECT COUNT(*)::int c FROM maintenance_schedule WHERE tenant_id = $1", [TENANT]),
+    };
+
+    // Every row the generator built must be in the database. This is the check
+    // that turns "the INSERTs did not throw" into "the rows are there".
+    const stored: Record<string, number> = {
+      assets: counts.assets,
+      sensor_readings: counts.readings,
+      anomalies: counts.anomalies,
+      work_orders: counts.wos,
+      parts: counts.parts,
+      maintenance_schedule: counts.pm,
+    };
+    const mismatches = Object.entries(stored)
+      .filter(([t, n]) => intended[t] !== undefined && intended[t] !== n)
+      .map(([t, n]) => `${t}: built ${intended[t]}, stored ${n}`);
+    if (mismatches.length) {
+      throw new Error(
+        `Seed did not land intact:\n  ${mismatches.join("\n  ")}`,
+      );
+    }
+
+    const bands = (
+      await client.query<{ risk_band: string; c: number }>(
+        "SELECT risk_band, COUNT(*)::int c FROM assets WHERE tenant_id = $1 GROUP BY risk_band ORDER BY c",
+        [TENANT],
+      )
+    ).rows;
+
+    console.log(`Seeded tenant "${TENANT}" in Postgres.`);
+    console.log(`  assets:        ${counts.assets}`);
+    console.log(`  readings:      ${counts.readings}`);
+    console.log(`  anomalies:     ${counts.anomalies} (${counts.anomalies7d} in last 7d)`);
+    console.log(`  work orders:   ${counts.wos}`);
+    console.log(`  parts:         ${counts.parts} (${counts.lowStock} below reorder)`);
+    console.log(`  pm tasks:      ${counts.pm}`);
+    console.log("  risk bands:    " + bands.map((b) => `${b.risk_band}=${b.c}`).join(", "));
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
+
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});
