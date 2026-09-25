@@ -934,7 +934,7 @@ async function main(): Promise<void> {
     if (process.env.AXLEPOINT_SKIP_SCHEMA !== "1") {
       // Applying the schema drops and recreates public, so it is opt-out for
       // the case where the caller has already prepared the database.
-      await client.query("DROP SCHEMA IF EXISTS pristine CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+      await client.query(fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"));
       await client.query(fs.readFileSync(SCHEMA_PATH, "utf8"));
     }
 
@@ -952,8 +952,18 @@ async function main(): Promise<void> {
     const resetPool = new Pool({ connectionString: resetUrl.toString() });
     const resetClient = await resetPool.connect();
     try {
+      const startedAt = new Date();
       const res = await resetTenantFromPristine(resetClient, TENANT);
       const restored = res.tables.reduce((n, t) => n + t.inserted, 0);
+      // Seeding IS a reset, so it is recorded as one. Otherwise `npm run
+      // check:reset` reports NEVER RAN immediately after a successful deploy
+      // step 3, and an operator learns to ignore the gate on its first use --
+      // which is how a gate stops being read.
+      await resetClient.query(
+        `INSERT INTO ops.reset_log (tenant_id, started_at, ok, rows_restored)
+         VALUES ($1, $2, true, $3)`,
+        [TENANT, startedAt, restored],
+      );
       console.log(`Reset restored ${restored} rows into tenant "${TENANT}".`);
     } finally {
       resetClient.release();

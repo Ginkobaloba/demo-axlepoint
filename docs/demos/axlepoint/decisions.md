@@ -1016,3 +1016,83 @@ deployed instance.** Stated here rather than left implicit, because a reset that
 exists and never runs looks exactly like a reset that works. AxlePoint is not
 deployable yet anyway (no Postgres), so this must be wired up as part of that
 deploy, not after it.
+
+## D-027: The deploy story, and the reset schedule as code (2026-09-25)
+
+Written before the Neon project exists so it is ready the moment it does.
+`docs/ops/DEPLOY_POSTGRES.md` is the runbook; this records the decisions behind
+it.
+
+**The schedule is a compose sidecar, not a Windows scheduled task.** A
+scheduled task lives on one machine, is invisible to the repository, cannot be
+reviewed, is not deployed with the thing it resets, and is silently orphaned
+the day the demo moves to Workers. The sidecar travels with the stack and its
+absence shows up in a compose file. It is built from THIS repo and runs
+`scripts/reset-demo.ts`, so it cannot drift from the reset the app was tested
+against -- a reimplementation would be a second thing to keep correct, and the
+one that silently diverges is always the scheduled one nobody looks at.
+
+The sidecar's fragment lives in `ops/reset-sidecar/compose.yml` rather than in
+`cloudflare-config/edge`: adding a service to the edge stack is a production
+change and belongs to the deployer, not to this repo reaching across.
+
+**A `while true; sleep` loop is not a scheduler and is not the guarantee.** It
+drifts, and a restart resets its phase. The guarantee is `npm run check:reset`.
+It sleeps AFTER running, so a restarted sidecar resets promptly instead of
+waiting an interval first -- waiting would leave exactly the gap the reset
+exists to close.
+
+**The reset log is in `ops`, not `public`, because the reset would erase it.**
+The obvious home for "when did this last run" is a meta row; meta is a public
+table, so every reset restores it from pristine and deletes the timestamp the
+reset just wrote. The audit trail would be destroyed by the thing it audits.
+`ops` is not walked by the reset, so rows survive.
+
+**Failures are logged too, in their own transaction.** Without a failure row,
+"no recent success" cannot distinguish "never ran" from "ran and failed", and
+those need different responses. The log write is outside the reset's
+transaction or it would roll back together with the failure it records.
+
+**The reset refuses to start with no alert destination.** A reset that fails
+silently is worse than one that does not run: the demo keeps serving visitor
+data past its retention window while every dashboard looks fine. The recurring
+version of this mistake is an alert that fires correctly into a channel nobody
+reads, so absence of a destination is a startup error, not a warning. The
+opt-out is deliberately awkward to type.
+
+**The freshness check reports three failures, not one.** NEVER_RAN (the
+schedule was never wired up -- a deploy mistake), FAILED (the schedule works,
+the reset is broken) and STALE (the schedule stopped). A single boolean
+collapses them, and NEVER_RAN is the one a deploy must refuse to proceed past.
+A fresh failure is reported as FAILED even when an older success is still
+inside the window: reporting OK because of a stale success is how a broken
+reset goes unnoticed.
+
+The verdict logic is pure (`src/lib/reset-freshness.ts`) so STALE and
+NEVER_RAN can be tested at all. Against a live database, proving STALE means
+waiting six hours or rewriting timestamps. **A check whose failure paths are
+untestable is a check nobody can trust when it finally fires.**
+
+**Seeding records itself as a reset.** Otherwise `check:reset` reports
+NEVER_RAN immediately after a successful seed, and an operator learns to ignore
+the gate on its very first use -- which is how a gate stops being read.
+
+**`db/reset-schemas.sql` exists because the drop list kept going out of date.**
+Adding `pristine`, then `ops`, broke every caller that carried its own
+hand-written DROP line, each time with the same "schema already exists" from a
+seed that had worked minutes earlier. One list, one place. It is separate from
+`schema.sql` on purpose: a bootstrap a production deploy runs must not carry
+DROP statements.
+
+### Still not true
+
+- **Nothing schedules the reset yet in any environment.** The sidecar is
+  defined and unbuilt. D-012's retention promise is not kept until it runs.
+- **The sidecar image has never been built** -- `docker build` is blocked at
+  `npm ci` with E401 (`read:packages`).
+- **Nothing in the runbook has been run against Neon.** The conditional
+  `ALTER ROLE` path is the step most likely to behave differently there, and it
+  is marked UNVERIFIED in the document.
+- **`deploy-demo.ps1` does not call `check:reset`.** Making the deploy refuse
+  to finish without a proven reset is a cloudflare-config change and belongs in
+  its own PR.

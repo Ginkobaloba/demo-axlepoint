@@ -52,7 +52,7 @@ beforeAll(async () => {
   }
   admin = new Pool({ connectionString: url });
   await admin.query(
-    "DROP SCHEMA IF EXISTS pristine CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;",
+    fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"),
   );
   await admin.query(fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8"));
   await admin.query("ALTER ROLE demo_reset PASSWORD 'demo_reset'");

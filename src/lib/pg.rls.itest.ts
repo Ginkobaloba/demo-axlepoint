@@ -77,7 +77,7 @@ beforeAll(async () => {
   admin = new Pool({ connectionString: adminUrl });
 
   const sql = fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
-  await admin.query("DROP SCHEMA IF EXISTS pristine CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.query(fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"));
   await admin.query(sql);
   // schema.sql deliberately carries NO password -- a credential in a committed
   // file is a credential in every clone. Dev sets it out of band, which is what
