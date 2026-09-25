@@ -45,7 +45,17 @@ async function main(): Promise<number> {
   try {
     const latest = (
       await pool.query<ResetLogRow>(
-        `SELECT ok, finished_at, rows_restored, error FROM ops.reset_log
+        // ::float8, NOT bare numeric. EXTRACT returns numeric, and
+        // node-postgres hands numeric back as a STRING for the same precision
+        // reason it does with int8 -- so age_hours arrived as "9.37" and
+        // .toFixed() threw. The unit tests could not catch it: they pass a real
+        // number, and the type only changes crossing the driver.
+        // EXTRACT against the database's own now(): one clock, end to end.
+        // Reading finished_at back and subtracting Node's Date.now() is what
+        // made this gate able to fail OPEN on a skewed host clock.
+        `SELECT ok, rows_restored, error,
+                (EXTRACT(EPOCH FROM (now() - finished_at)) / 3600.0)::float8 AS age_hours
+           FROM ops.reset_log
           WHERE tenant_id = $1 ORDER BY finished_at DESC LIMIT 1`,
         [TENANT],
       )
