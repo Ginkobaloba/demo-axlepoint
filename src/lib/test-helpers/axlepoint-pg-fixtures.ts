@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Pool } from "pg";
+import { refuseIfNotOurDatabase } from "@/lib/scratch-db-guard";
 
 /**
  * Postgres counterpart to seedFixtureDb() in axlepoint-fixtures.ts.
@@ -26,6 +27,7 @@ export async function seedFixturePg(
     path.join(process.cwd(), "db", "schema.sql"),
     "utf8",
   );
+  await refuseIfNotOurDatabase((sql) => admin.query(sql));
   await admin.query(fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"));
   await admin.query(schema);
   // schema.sql deliberately ships no password; set one for local connections.

@@ -26,6 +26,7 @@ import path from "path";
 import { Pool } from "pg";
 import { PgSink } from "./lib/pg-sink";
 import { resetTenantFromPristine } from "../src/lib/demo-reset";
+import { refuseIfNotOurDatabase } from "../src/lib/scratch-db-guard";
 import { Rng } from "../src/lib/rng";
 import {
   initState,
@@ -934,6 +935,12 @@ async function main(): Promise<void> {
     if (process.env.AXLEPOINT_SKIP_SCHEMA !== "1") {
       // Applying the schema drops and recreates public, so it is opt-out for
       // the case where the caller has already prepared the database.
+      //
+      // THE GUARD MATTERS MOST HERE. A developer running `npm run db:generate`
+      // with a stale DATABASE_URL in their shell wipes whatever it points at,
+      // and unlike the test suites nothing about this command reads as
+      // destructive. It refuses on any table the schema does not define.
+      await refuseIfNotOurDatabase((sql) => client.query(sql));
       await client.query(fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"));
       await client.query(fs.readFileSync(SCHEMA_PATH, "utf8"));
     }

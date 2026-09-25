@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
+import { refuseIfNotOurDatabase } from "@/lib/scratch-db-guard";
 import { withTenant, __getPoolForTests, closePool, TenantScopeError } from "@/lib/pg";
 
 /**
@@ -77,6 +78,7 @@ beforeAll(async () => {
   admin = new Pool({ connectionString: adminUrl });
 
   const sql = fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
+  await refuseIfNotOurDatabase((sql) => admin.query(sql));
   await admin.query(fs.readFileSync(path.join(process.cwd(), "db", "reset-schemas.sql"), "utf8"));
   await admin.query(sql);
   // schema.sql deliberately carries NO password -- a credential in a committed
