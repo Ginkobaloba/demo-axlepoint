@@ -11,10 +11,14 @@
 --    tenant hold its own copy of the same seed, which is precisely what the
 --    demo reset needs.
 --
--- 2. anomalies.id was INTEGER PRIMARY KEY AUTOINCREMENT.
---    Now GENERATED ALWAYS AS IDENTITY. Identity is per-table, not per-tenant,
---    so ids are unique across tenants; that is fine because the primary key is
---    (tenant_id, id) and nothing reads meaning into the number.
+-- 2. anomalies.id was INTEGER PRIMARY KEY AUTOINCREMENT, and is now a uuid.
+--    An identity column is backed by ONE sequence shared by every tenant, and
+--    SELECT on sequences is granted to the app role, so any tenant could read
+--    last_value and learn how many rows every OTHER tenant had inserted -- and
+--    infer more from the gaps in its own ids. Measured 2026-09-25: the app role
+--    read anomalies_id_seq.last_value directly. A uuid has no shared counter,
+--    so there is nothing to observe. Changed before the query port rather than
+--    after, while no code depends on the type.
 --
 -- 3. RLS IS APPLIED FROM THE CATALOG, NOT BY HAND.
 --    The realistic failure is not getting a policy wrong, it is adding table
@@ -29,15 +33,101 @@
 -- does not depend on a driver's transaction semantics. See
 -- C:\dev\AXLEPOINT_WORKERS_FEASIBILITY_2026-09-25.md section 3.
 
+-- ---------------------------------------------------------------------------
+-- THE APPLICATION ROLE COMES FIRST, and why the order matters.
+--
+-- This file is a BOOTSTRAP for an EMPTY public schema, not a migration: the
+-- CREATE TABLEs below abort on a re-apply ("relation meta already exists").
+-- With the role block at the END, a re-apply therefore never reached it, so the
+-- security attributes below silently stopped being re-asserted the moment the
+-- schema existed. Putting it first means the role is corrected on EVERY apply,
+-- successful or not.
+--
+-- RLS DOES NOT APPLY TO A SUPERUSER. Not with ENABLE, not with FORCE:
+-- BYPASSRLS is implicit for superusers and FORCE cannot override it. The
+-- postgres Docker image creates POSTGRES_USER as a superuser, so connecting as
+-- it made every policy in this file silently inert -- measured 2026-09-25,
+-- where an unscoped SELECT returned both tenants and tenant A successfully
+-- INSERTed a row tagged tenant B, against a schema that reads as correct.
+--
+-- NO PASSWORD HERE. It is set out of band (docker-compose.dev.yml for local
+-- work, the provider's own mechanism in production). A credential in a
+-- committed schema file is a credential in every clone and every CI log.
+--
+-- THE ALTER IS CONDITIONAL, and that is not tidiness. Postgres requires the
+-- altering role to HOLD each attribute it changes -- measured: a CREATEROLE
+-- non-superuser gets "Only roles with the SUPERUSER attribute may change the
+-- SUPERUSER attribute", and the same for BYPASSRLS and REPLICATION, EVEN WHEN
+-- SETTING THEM TO THE VALUE THEY ALREADY HAVE. Neon's admin role is not a
+-- superuser, so an unconditional ALTER would abort the whole apply on a
+-- correctly-provisioned database. So: check first, only alter what is actually
+-- wrong, and if it is wrong and cannot be fixed, fail LOUDLY with what to do.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  r record;
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'axlepoint_app') THEN
+    CREATE ROLE axlepoint_app LOGIN;
+  END IF;
+
+  SELECT rolsuper, rolbypassrls, rolreplication, rolcreatedb, rolcreaterole
+    INTO r FROM pg_roles WHERE rolname = 'axlepoint_app';
+
+  IF r.rolsuper OR r.rolbypassrls OR r.rolreplication OR r.rolcreatedb OR r.rolcreaterole THEN
+    BEGIN
+      ALTER ROLE axlepoint_app
+        NOSUPERUSER NOBYPASSRLS NOREPLICATION NOCREATEDB NOCREATEROLE;
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE EXCEPTION
+        'axlepoint_app holds privileges that defeat RLS (super=% bypassrls=% repl=%), and this role cannot remove them. Provision it without them, out of band, then re-apply.',
+        r.rolsuper, r.rolbypassrls, r.rolreplication;
+    END;
+  END IF;
+END
+$$;
+
+-- ---------------------------------------------------------------------------
+-- NO VIEWS, MATERIALIZED VIEWS OR FOREIGN TABLES IN THIS SCHEMA.
+--
+-- The RLS loop above walks pg_tables, which lists ORDINARY TABLES ONLY. A view
+-- is relkind 'v' and never appears there, so it would receive no policy -- and
+-- a view owned by a privileged role runs with that role's rights, handing back
+-- every tenant's rows through a relation the coverage tests cannot even see.
+-- Materialized views are worse: they cannot carry RLS at all.
+--
+-- Verified 2026-09-25: CREATE VIEW leaky AS SELECT * FROM assets; leaves
+-- pg_tables with zero rows for it, and all three coverage tests still pass.
+--
+-- So this fails the apply rather than trusting a convention. If AxlePoint ever
+-- needs a view, it must be created with security_invoker = true AND the
+-- coverage tests extended in the same change.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  SELECT string_agg(c.relname || ' (' || c.relkind::text || ')', ', ')
+    INTO bad
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+   WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm', 'f');
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION
+      'public contains relations RLS cannot cover: %. Views/matviews/foreign tables bypass the pg_tables walk.', bad;
+  END IF;
+END
+$$;
+
 CREATE TABLE meta (
-  tenant_id text NOT NULL,
+  tenant_id text NOT NULL CHECK (tenant_id <> ''),
   key       text NOT NULL,
   value     text NOT NULL,
   PRIMARY KEY (tenant_id, key)
 );
 
 CREATE TABLE assets (
-  tenant_id    text NOT NULL,
+  tenant_id    text NOT NULL CHECK (tenant_id <> ''),
   id           text NOT NULL,
   name         text NOT NULL,
   type         text NOT NULL,
@@ -55,7 +145,7 @@ CREATE TABLE assets (
 );
 
 CREATE TABLE sensor_readings (
-  tenant_id   text NOT NULL,
+  tenant_id   text NOT NULL CHECK (tenant_id <> ''),
   asset_id    text NOT NULL,
   sensor_type text NOT NULL,
   ts          bigint NOT NULL,
@@ -64,8 +154,8 @@ CREATE TABLE sensor_readings (
 CREATE INDEX idx_readings ON sensor_readings (tenant_id, asset_id, sensor_type, ts);
 
 CREATE TABLE anomalies (
-  tenant_id   text NOT NULL,
-  id          bigint GENERATED ALWAYS AS IDENTITY,
+  tenant_id   text NOT NULL CHECK (tenant_id <> ''),
+  id          uuid NOT NULL DEFAULT gen_random_uuid(),
   asset_id    text NOT NULL,
   sensor_type text NOT NULL,
   ts          bigint NOT NULL,
@@ -79,7 +169,7 @@ CREATE INDEX idx_anomalies_asset ON anomalies (tenant_id, asset_id, ts);
 CREATE INDEX idx_anomalies_ts    ON anomalies (tenant_id, ts);
 
 CREATE TABLE work_orders (
-  tenant_id    text NOT NULL,
+  tenant_id    text NOT NULL CHECK (tenant_id <> ''),
   id           text NOT NULL,
   asset_id     text NOT NULL,
   title        text NOT NULL,
@@ -97,7 +187,7 @@ CREATE INDEX idx_wo_asset  ON work_orders (tenant_id, asset_id);
 CREATE INDEX idx_wo_status ON work_orders (tenant_id, status);
 
 CREATE TABLE parts (
-  tenant_id      text NOT NULL,
+  tenant_id      text NOT NULL CHECK (tenant_id <> ''),
   id             text NOT NULL,
   sku            text NOT NULL,
   name           text NOT NULL,
@@ -111,7 +201,7 @@ CREATE TABLE parts (
 );
 
 CREATE TABLE work_order_parts (
-  tenant_id     text NOT NULL,
+  tenant_id     text NOT NULL CHECK (tenant_id <> ''),
   work_order_id text NOT NULL,
   part_id       text NOT NULL,
   qty           integer NOT NULL
@@ -119,7 +209,7 @@ CREATE TABLE work_order_parts (
 CREATE INDEX idx_wop ON work_order_parts (tenant_id, work_order_id);
 
 CREATE TABLE technicians (
-  tenant_id      text NOT NULL,
+  tenant_id      text NOT NULL CHECK (tenant_id <> ''),
   id             text NOT NULL,
   name           text NOT NULL,
   role           text NOT NULL,
@@ -132,7 +222,7 @@ CREATE TABLE technicians (
 );
 
 CREATE TABLE maintenance_schedule (
-  tenant_id     text NOT NULL,
+  tenant_id     text NOT NULL CHECK (tenant_id <> ''),
   id            text NOT NULL,
   asset_id      text NOT NULL,
   task          text NOT NULL,
@@ -144,7 +234,7 @@ CREATE TABLE maintenance_schedule (
 );
 
 CREATE TABLE purchase_orders (
-  tenant_id   text NOT NULL,
+  tenant_id   text NOT NULL CHECK (tenant_id <> ''),
   id          text NOT NULL,
   supplier    text NOT NULL,
   status      text NOT NULL,
@@ -157,7 +247,7 @@ CREATE TABLE purchase_orders (
 );
 
 CREATE TABLE purchase_order_lines (
-  tenant_id text NOT NULL,
+  tenant_id text NOT NULL CHECK (tenant_id <> ''),
   po_id     text NOT NULL,
   part_id   text NOT NULL,
   qty       integer NOT NULL,
@@ -195,56 +285,27 @@ DECLARE
   t text;
 BEGIN
   FOR t IN
-    SELECT tablename FROM pg_tables WHERE schemaname = current_schema()
+    SELECT tablename FROM pg_tables WHERE schemaname = 'public'
   LOOP
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY', t);
     EXECUTE format('ALTER TABLE %I FORCE ROW LEVEL SECURITY', t);
     EXECUTE format($f$
       CREATE POLICY tenant_isolation ON %I
-        USING      (tenant_id = current_setting('app.tenant_id', true))
-        WITH CHECK (tenant_id = current_setting('app.tenant_id', true))
+        USING      (tenant_id = NULLIF(current_setting('app.tenant_id', true), ''))
+        WITH CHECK (tenant_id = NULLIF(current_setting('app.tenant_id', true), ''))
     $f$, t);
   END LOOP;
 END
 $$;
 
 -- ---------------------------------------------------------------------------
--- THE APPLICATION ROLE, and why every policy above is worthless without it.
+-- Privileges for the application role. AFTER the tables, necessarily.
 --
--- RLS DOES NOT APPLY TO A SUPERUSER. Not with ENABLE, not with FORCE: BYPASSRLS
--- is implicit for superusers and FORCE cannot override it. The postgres Docker
--- image creates POSTGRES_USER as a superuser, so connecting as it made every
--- policy above silently inert -- measured 2026-09-25, where an unscoped SELECT
--- returned both tenants' rows and tenant A successfully INSERTed a row tagged
--- tenant B, with a schema that reads as completely correct.
---
--- That is the most dangerous shape a security control can take: right on paper,
--- absent at runtime, and invisible to any test whose queries already filter by
--- tenant in their WHERE clause.
---
--- So the app connects as THIS role, which is neither superuser nor the owner of
--- the tables, and is explicitly NOBYPASSRLS. On Neon the default role is not a
--- superuser but IS the owner of what it creates, which is the case FORCE above
--- exists for; the two together cover both deployments.
+-- NO SEQUENCE GRANT. There are no sequences any more: anomalies.id became a
+-- uuid precisely because one shared sequence let any tenant read last_value and
+-- learn every other tenant's insert volume. If a sequence is ever reintroduced,
+-- granting SELECT on it reopens that channel -- grant USAGE alone, which allows
+-- nextval without allowing the counter to be read.
 -- ---------------------------------------------------------------------------
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'axlepoint_app') THEN
-    CREATE ROLE axlepoint_app LOGIN PASSWORD 'axlepoint_app';
-  END IF;
-END
-$$;
-
--- The ALTER is UNCONDITIONAL, and that is the point. Roles are CLUSTER-level,
--- so DROP SCHEMA never removes them and a "CREATE ROLE IF NOT EXISTS" runs
--- exactly once in the life of a database. Putting the security attributes on
--- the CREATE therefore makes them UNENFORCEABLE: change them here and nothing
--- happens, forever, because the role already exists. Found by mutation on
--- 2026-09-25 -- granting BYPASSRLS in the CREATE left every test green,
--- because the CREATE never ran. Re-asserting them on every apply is what makes
--- this file the authority on what the role may do.
-ALTER ROLE axlepoint_app NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE NOREPLICATION;
-
 GRANT USAGE ON SCHEMA public TO axlepoint_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO axlepoint_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO axlepoint_app;

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { Pool } from "pg";
-import { withTenant, getPool, closePool, TenantScopeError } from "@/lib/pg";
+import { withTenant, __getPoolForTests, closePool, TenantScopeError } from "@/lib/pg";
 
 /**
  * Does per-tenant isolation ACTUALLY hold? Integration test, needs a real
@@ -77,8 +77,12 @@ beforeAll(async () => {
   const sql = fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
   await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
   await admin.query(sql);
+  // schema.sql deliberately carries NO password -- a credential in a committed
+  // file is a credential in every clone. Dev sets it out of band, which is what
+  // production does too.
+  await admin.query("ALTER ROLE axlepoint_app PASSWORD 'axlepoint_app'");
 
-  // Everything from here on goes through the app role, so getPool() must see
+  // Everything from here on goes through the app role, so the pool must see
   // that URL before withTenant() ever builds the pool.
   process.env.DATABASE_URL = appUrlFrom(adminUrl);
 
@@ -214,7 +218,7 @@ describe("the setting does not survive its transaction", () => {
   it("returns nothing outside withTenant, because app.tenant_id is unset", async () => {
     // Straight off the pool, no transaction, no setting. RLS must deny by
     // default rather than fall open.
-    const { rows } = await getPool().query("SELECT id FROM assets");
+    const { rows } = await __getPoolForTests().query("SELECT id FROM assets");
     expect(rows).toHaveLength(0);
   });
 
@@ -226,7 +230,7 @@ describe("the setting does not survive its transaction", () => {
       }),
     ).rejects.toThrow("boom");
 
-    const { rows } = await getPool().query<{ t: string | null }>(
+    const { rows } = await __getPoolForTests().query<{ t: string | null }>(
       "SELECT current_setting('app.tenant_id', true) AS t",
     );
     // Postgres leaves a reset GUC as '' rather than NULL once it has been set
@@ -291,5 +295,117 @@ describe("RLS coverage is total", () => {
     );
     const have = new Set(cols.map((r) => r.table_name));
     expect(tables.map((t) => t.tablename).filter((t) => !have.has(t))).toEqual([]);
+  });
+});
+
+/**
+ * Hardening added in step 1.5, after independent review. Every test below
+ * corresponds to a claim that was VERIFIED against this database first; the one
+ * claim that did not reproduce (a failed ROLLBACK returning a dirty client to
+ * the pool) is deliberately not asserted here, because asserting behaviour that
+ * does not exist is how a suite starts lying.
+ */
+describe("the handle cannot outlive its transaction", () => {
+  it("throws if a stashed handle is used after withTenant returns", async () => {
+    let escaped: { query: (t: string) => Promise<unknown> } | null = null;
+    await withTenant(A, async (db) => {
+      escaped = db;
+      await db.query("SELECT 1");
+    });
+    // Before the `done` flag this SUCCEEDED, on a released client that could
+    // by then be serving another tenant.
+    await expect(escaped!.query("SELECT 1")).rejects.toBeInstanceOf(TenantScopeError);
+  });
+
+  it("surfaces an aborted transaction instead of reporting a successful commit", async () => {
+    // Postgres answers COMMIT on an aborted transaction with the tag ROLLBACK
+    // and no error. A caller that swallowed the original failure would be told
+    // its writes landed when they were discarded.
+    await expect(
+      withTenant(A, async (db) => {
+        try {
+          await db.query("SELECT 1/0");
+        } catch {
+          // swallowed on purpose: this is the shape that hid the problem
+        }
+        return "looks fine";
+      }),
+    ).rejects.toThrow(/did not commit|ROLLBACK/i);
+  });
+});
+
+describe("the empty-string tenant id cannot become a real tenant", () => {
+  it("is rejected by a CHECK constraint on every table", async () => {
+    const { rows } = await admin.query<{ tablename: string }>(
+      `SELECT t.tablename FROM pg_tables t
+        WHERE t.schemaname = 'public'
+          AND NOT EXISTS (
+            SELECT 1 FROM pg_constraint c
+             WHERE c.conrelid = (quote_ident(t.schemaname)||'.'||quote_ident(t.tablename))::regclass
+               AND c.contype = 'c'
+               AND pg_get_constraintdef(c.oid) LIKE '%tenant_id%')`,
+    );
+    expect(rows.map((r) => r.tablename)).toEqual([]);
+  });
+
+  it("and the admin cannot plant one either", async () => {
+    await expect(
+      admin.query(
+        `INSERT INTO meta (tenant_id, key, value) VALUES ('', 'k', 'v')`,
+      ),
+    ).rejects.toThrow(/check constraint/i);
+  });
+});
+
+describe("relations RLS cannot cover do not exist", () => {
+  // The coverage tests walk pg_tables, which lists ORDINARY TABLES ONLY. A view
+  // is relkind 'v' and is invisible to all of them; a matview cannot carry RLS
+  // at all. Verified 2026-09-25: creating a view left every coverage test green.
+  it("public contains no views, materialized views or foreign tables", async () => {
+    const { rows } = await admin.query<{ relname: string; relkind: string }>(
+      `SELECT c.relname, c.relkind::text AS relkind
+         FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind IN ('v','m','f')`,
+    );
+    expect(rows.map((r) => `${r.relname} (${r.relkind})`)).toEqual([]);
+  });
+
+  it("and no sequences, whose shared counter would leak cross-tenant volume", async () => {
+    const { rows } = await admin.query<{ relname: string }>(
+      `SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind = 'S'`,
+    );
+    expect(rows.map((r) => r.relname)).toEqual([]);
+  });
+});
+
+describe("no second policy can quietly widen a table", () => {
+  it("every table has exactly one permissive policy, covering ALL commands", async () => {
+    const { rows } = await admin.query<{
+      tablename: string;
+      n: string;
+      cmds: string;
+    }>(
+      `SELECT tablename, count(*)::text AS n, string_agg(DISTINCT cmd, ',') AS cmds
+         FROM pg_policies WHERE schemaname = 'public'
+        GROUP BY tablename ORDER BY tablename`,
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.filter((r) => r.n !== "1").map((r) => r.tablename)).toEqual([]);
+    expect(rows.filter((r) => r.cmds !== "ALL").map((r) => r.tablename)).toEqual([]);
+  });
+});
+
+describe("a future foreign key cannot be used to probe another tenant", () => {
+  // None exist today. This exists so that adding one on (id) alone -- which
+  // would let a row reference another tenant's row, and let existence be probed
+  // through constraint violations -- fails here rather than in review.
+  it("every foreign key includes tenant_id in its column list", async () => {
+    const { rows } = await admin.query<{ conname: string; def: string }>(
+      `SELECT c.conname, pg_get_constraintdef(c.oid) AS def
+         FROM pg_constraint c JOIN pg_namespace n ON n.oid = c.connamespace
+        WHERE n.nspname = 'public' AND c.contype = 'f'`,
+    );
+    expect(rows.filter((r) => !r.def.includes("tenant_id")).map((r) => r.conname)).toEqual([]);
   });
 });
