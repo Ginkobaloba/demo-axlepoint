@@ -1,32 +1,51 @@
 /**
  * Integration tests for POST /api/work-orders (D-012, anonymous by design).
  *
- * Env vars are set before any import so db.ts (imported transitively via
- * queries.ts) opens a throwaway fixture database instead of the real one.
- * The reset scheduler is disabled here on purpose -- these tests are about
- * what gets persisted per request, not the seed-reset timer, which has its
- * own coverage in src/lib/db.test.ts.
+ * MOVED FROM route.test.ts TO route.itest.ts BY THE POSTGRES PORT. It was
+ * always an integration test -- it drove the real handlers against a real
+ * database -- but the database used to be a throwaway SQLite FILE, which the
+ * unit suite could create for itself. It now needs a running Postgres, so it
+ * belongs in the suite that has one (`npm run test:rls`) rather than in
+ * `npm test`, which must stay database-free.
+ *
+ * NOT ONE ASSERTION CHANGED. Every test below still asserts exactly what it
+ * asserted against SQLite: that visitor free text is never persisted (D-012),
+ * that assigned_to must resolve to a real technician (deep-verify PR #24
+ * blocker B1), and the W2/W4/W5 fixes. Only the plumbing moved. Rewriting the
+ * assertions during a port is how a port quietly loses the coverage it was
+ * supposed to preserve.
+ *
+ * The fixture seeds the SAMPLE tenant, because that is the tenant the route
+ * handlers resolve to (src/lib/tenant.ts). Seeding any other tenant would
+ * leave the handlers reading an empty world and every "nothing was stored"
+ * assertion would pass for the wrong reason.
  */
 
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
-import os from "node:os";
-import path from "node:path";
-import fs from "node:fs";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { Pool } from "pg";
 import { NextRequest } from "next/server";
-import { seedFixtureDb } from "@/lib/test-helpers/axlepoint-fixtures";
+import { seedFixturePg } from "@/lib/test-helpers/axlepoint-pg-fixtures";
 import { deriveRecommendedWorkOrder } from "@/lib/predictive-action";
-
-const TMP_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "axlepoint-wo-route-"));
-const LIVE = path.join(TMP_DIR, "axlepoint.db");
-
-process.env.AXLEPOINT_DB_PATH = LIVE;
-process.env.AXLEPOINT_SEED_DB_PATH = path.join(TMP_DIR, "axlepoint.seed.db");
-process.env.AXLEPOINT_RESET_DISABLED = "1";
+import { SAMPLE_TENANT, withCurrentTenant } from "@/lib/tenant";
+import { closePool } from "@/lib/pg";
 
 let POST: typeof import("./route").POST;
 let PATCH: typeof import("./[id]/route").PATCH;
 let queries: typeof import("@/lib/queries");
-let dbModule: typeof import("@/lib/db");
+let admin: Pool;
+let adminUrl: string;
+
+/**
+ * The same three query functions the tests always used, each wrapped in the
+ * one transaction the app would use. Kept as thin named helpers so the call
+ * sites below read as they did before the port.
+ */
+const q = {
+  getWorkOrder: (id: string) =>
+    withCurrentTenant((db) => queries.getWorkOrder(db, id)),
+  getWorkOrders: () => withCurrentTenant((db) => queries.getWorkOrders(db)),
+  getAsset: (id: string) => withCurrentTenant((db) => queries.getAsset(db, id)),
+};
 
 const URL = "http://localhost:3000/api/work-orders";
 
@@ -47,25 +66,58 @@ function jsonRequest(body: unknown): NextRequest {
 }
 
 /** Everything readable through the same query functions the app's pages use. */
-function allStoredText(): string {
-  const rows = queries.getWorkOrders();
-  return JSON.stringify(rows);
+async function allStoredText(): Promise<string> {
+  return JSON.stringify(await q.getWorkOrders());
 }
 
 beforeAll(async () => {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set. These tests DROP AND RECREATE the public " +
+        "schema, so they refuse to guess. See docker-compose.dev.yml.",
+    );
+  }
+  for (const smell of ["neon.tech", "prod", "portal"]) {
+    if (url.toLowerCase().includes(smell)) {
+      throw new Error(`DATABASE_URL contains "${smell}". Refusing: this drops schemas.`);
+    }
+  }
+  adminUrl = url;
+  admin = new Pool({ connectionString: url });
+
   ({ POST } = await import("./route"));
   ({ PATCH } = await import("./[id]/route"));
   queries = await import("@/lib/queries");
-  dbModule = await import("@/lib/db");
 });
 
-beforeEach(() => {
-  // Close any connection a previous test left open first -- on Windows,
-  // rewriting the file while better-sqlite3 still holds it open fails
-  // with EBUSY.
-  dbModule._resetAxlepointDbStateForTests();
-  seedFixtureDb(LIVE);
+afterAll(async () => {
+  await closePool();
+  if (admin) await admin.end();
+  // RESTORE THE ADMIN URL. This file rewrites process.env.DATABASE_URL to the
+  // unprivileged role, and process env is shared by every file in the run.
+  // Leaving it rewritten made the suite's result depend on which file vitest
+  // happened to run first: pg.rls.itest.ts would then try DROP SCHEMA as
+  // axlepoint_app and fail. Sequential execution is not isolation.
+  if (adminUrl) process.env.DATABASE_URL = adminUrl;
 });
+
+beforeEach(async () => {
+  // A fresh world per test, as the SQLite version got by rewriting its file.
+  await seedFixturePg(admin, SAMPLE_TENANT);
+  // The pool must be rebuilt after the role's password is (re)set, and so that
+  // no client carries state from the schema that was just dropped.
+  await closePool();
+  process.env.DATABASE_URL = appUrl(process.env.DATABASE_URL as string);
+});
+
+/** The same server, as the unprivileged application role. */
+function appUrl(adminUrl: string): string {
+  const u = new globalThis.URL(adminUrl);
+  u.username = "axlepoint_app";
+  u.password = "axlepoint_app";
+  return u.toString();
+}
 
 describe("POST /api/work-orders -- visitor free text is never persisted", () => {
   it("never stores the title or description typed via the form", async () => {
@@ -90,12 +142,12 @@ describe("POST /api/work-orders -- visitor free text is never persisted", () => 
     // "Visitor B" (or the same visitor a moment later -- there is no
     // per-visitor identity here, which is the point) reads it back through
     // the exact functions the app's server-rendered pages call.
-    const detail = queries.getWorkOrder(id as string);
+    const detail = await q.getWorkOrder(id as string);
     expect(detail).toBeTruthy();
     expect(detail?.title).not.toContain(secretTitle);
     expect(detail?.description).not.toContain(secretDescription);
 
-    const dump = allStoredText();
+    const dump = await allStoredText();
     expect(dump).not.toContain(secretTitle);
     expect(dump).not.toContain(secretDescription);
   });
@@ -118,11 +170,11 @@ describe("POST /api/work-orders -- visitor free text is never persisted", () => 
     const body = (await res.json()) as { id: string; url: string };
     expect(body.id).toMatch(/^WO-\d+$/);
 
-    const detail = queries.getWorkOrder(body.id);
+    const detail = await q.getWorkOrder(body.id);
     expect(detail?.title).not.toContain(secretTitle);
     expect(detail?.description).not.toContain(secretDescription);
 
-    const dump = allStoredText();
+    const dump = await allStoredText();
     expect(dump).not.toContain(secretTitle);
     expect(dump).not.toContain(secretDescription);
   });
@@ -138,7 +190,7 @@ describe("POST /api/work-orders -- visitor free text is never persisted", () => 
       }),
     );
     const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1];
-    const detail = queries.getWorkOrder(id as string);
+    const detail = await q.getWorkOrder(id as string);
     expect(detail?.title).toBe("Preventive - Meridian V12T #04");
     expect(detail?.description).toContain("isn't stored in this demo");
   });
@@ -159,9 +211,9 @@ describe("POST /api/work-orders -- visitor free text is never persisted", () => 
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as { id: string };
-    const detail = queries.getWorkOrder(body.id);
+    const detail = await q.getWorkOrder(body.id);
 
-    const asset = queries.getAsset("AST-01");
+    const asset = await q.getAsset("AST-01");
     const expected = deriveRecommendedWorkOrder(asset!);
     expect(detail?.title).toBe(expected.title);
     expect(detail?.description).toBe(expected.description);
@@ -188,7 +240,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
     expect(res.status).toBe(303);
     const location = res.headers.get("location") ?? "";
     expect(location).toContain("error=Unknown%20technician.");
-    expect(allStoredText()).not.toContain(marker);
+    expect((await allStoredText())).not.toContain(marker);
   });
 
   it("POST (JSON): rejects a marker string with 422 and never stores it", async () => {
@@ -203,7 +255,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
       }),
     );
     expect(res.status).toBe(422);
-    expect(allStoredText()).not.toContain(marker);
+    expect((await allStoredText())).not.toContain(marker);
   });
 
   it("POST: empty or absent assigned_to still clears to null (unaffected by the fix)", async () => {
@@ -218,7 +270,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
     );
     expect(res.status).toBe(303);
     const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
-    expect(queries.getWorkOrder(id)?.assigned_to).toBeNull();
+    expect((await q.getWorkOrder(id))?.assigned_to).toBeNull();
   });
 
   it("PATCH assign: rejects a marker string on a seed work order with 422 and leaves its real assignment untouched", async () => {
@@ -227,7 +279,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
     // just that a marker failed to appear on a column that started empty
     // -- this is the exact row shape B1 attacked (a pre-existing/seed row).
     const marker = "B1-MARKER-patch-seed-assign-1a77";
-    const before = queries.getWorkOrder("WO-1")?.assigned_to;
+    const before = (await q.getWorkOrder("WO-1"))?.assigned_to;
     expect(before).toBe("TCH-01");
 
     const res = await PATCH(
@@ -241,8 +293,8 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
     expect(res.status).toBe(422);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("Unknown technician.");
-    expect(queries.getWorkOrder("WO-1")?.assigned_to).toBe("TCH-01");
-    expect(allStoredText()).not.toContain(marker);
+    expect((await q.getWorkOrder("WO-1"))?.assigned_to).toBe("TCH-01");
+    expect((await allStoredText())).not.toContain(marker);
   });
 
   it("PATCH assign: rejects a marker string on a freshly created work order with 422 and never stores it", async () => {
@@ -267,8 +319,8 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
       { params: Promise.resolve({ id }) },
     );
     expect(res.status).toBe(422);
-    expect(queries.getWorkOrder(id)?.assigned_to).toBeNull();
-    expect(allStoredText()).not.toContain(marker);
+    expect((await q.getWorkOrder(id))?.assigned_to).toBeNull();
+    expect((await allStoredText())).not.toContain(marker);
   });
 
   it("PATCH assign: still accepts a real technician id and still accepts clearing to null", async () => {
@@ -281,7 +333,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
       { params: Promise.resolve({ id: "WO-1" }) },
     );
     expect(assignRes.status).toBe(200);
-    expect(queries.getWorkOrder("WO-1")?.assigned_to).toBe("TCH-01");
+    expect((await q.getWorkOrder("WO-1"))?.assigned_to).toBe("TCH-01");
 
     const clearRes = await PATCH(
       new NextRequest("http://localhost:3000/api/work-orders/WO-1", {
@@ -292,7 +344,7 @@ describe("assigned_to must resolve to a real technician (deep-verify PR #24 bloc
       { params: Promise.resolve({ id: "WO-1" }) },
     );
     expect(clearRes.status).toBe(200);
-    expect(queries.getWorkOrder("WO-1")?.assigned_to).toBeNull();
+    expect((await q.getWorkOrder("WO-1"))?.assigned_to).toBeNull();
   });
 });
 
@@ -339,7 +391,7 @@ describe("POST /api/work-orders -- W2/W4/W5 fixes (deep-verify PR #24)", () => {
     );
     expect(res.status).toBe(303);
     const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
-    expect(queries.getWorkOrder(id)?.due_at).toBeTruthy();
+    expect((await q.getWorkOrder(id))?.due_at).toBeTruthy();
   });
 
   it("W5: rejects an overflow date (2026-02-30) instead of silently rolling it to March 2", async () => {
@@ -368,7 +420,7 @@ describe("POST /api/work-orders -- W2/W4/W5 fixes (deep-verify PR #24)", () => {
     );
     expect(res.status).toBe(303);
     const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
-    expect(queries.getWorkOrder(id)?.due_at).toBeNull();
+    expect((await q.getWorkOrder(id))?.due_at).toBeNull();
   });
 
   it("W5: PATCH due rejects the same overflow date POST now rejects", async () => {
@@ -393,7 +445,7 @@ describe("POST /api/work-orders -- W2/W4/W5 fixes (deep-verify PR #24)", () => {
       { params: Promise.resolve({ id: "WO-1" }) },
     );
     expect(res.status).toBe(200);
-    expect(queries.getWorkOrder("WO-1")?.due_at).toBeNull();
+    expect((await q.getWorkOrder("WO-1"))?.due_at).toBeNull();
   });
 });
 
@@ -412,10 +464,10 @@ describe("POST /api/work-orders -- the demo flow still works end to end", () => 
     expect(res.status).toBe(303);
     const id = (res.headers.get("location") ?? "").match(/work-orders\/(WO-\d+)/)?.[1] as string;
 
-    const list = queries.getWorkOrders();
+    const list = await q.getWorkOrders();
     expect(list.some((w) => w.id === id)).toBe(true);
 
-    const detail = queries.getWorkOrder(id);
+    const detail = await q.getWorkOrder(id);
     expect(detail).toMatchObject({
       id,
       asset_id: "AST-01",
@@ -475,19 +527,19 @@ describe("POST /api/work-orders -- the demo flow still works end to end", () => 
       params: Promise.resolve({ id }),
     });
     expect(assignRes.status).toBe(200);
-    expect(queries.getWorkOrder(id)?.assigned_to).toBe("TCH-01");
+    expect((await q.getWorkOrder(id))?.assigned_to).toBe("TCH-01");
 
     const statusRes = await PATCH(patchRequest({ action: "status", status: "in_progress" }), {
       params: Promise.resolve({ id }),
     });
     expect(statusRes.status).toBe(200);
-    expect(queries.getWorkOrder(id)?.status).toBe("in_progress");
+    expect((await q.getWorkOrder(id))?.status).toBe("in_progress");
 
     const closeRes = await PATCH(patchRequest({ action: "status", status: "closed" }), {
       params: Promise.resolve({ id }),
     });
     expect(closeRes.status).toBe(200);
-    const closed = queries.getWorkOrder(id);
+    const closed = await q.getWorkOrder(id);
     expect(closed?.status).toBe("closed");
     expect(closed?.completed_at).toBeTruthy();
   });

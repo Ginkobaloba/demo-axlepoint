@@ -10,6 +10,7 @@ import {
   setWorkOrderStatus,
 } from "@/lib/queries";
 import { parseWorkOrderPatch } from "@/lib/wo-actions";
+import { withCurrentTenant } from "@/lib/tenant";
 
 /**
  * Mutates a single work order. Drives the closed-loop demo workflow:
@@ -27,7 +28,7 @@ import { parseWorkOrderPatch } from "@/lib/wo-actions";
  */
 export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const wo = getWorkOrder(params.id);
+  const wo = await withCurrentTenant((db) => getWorkOrder(db, params.id));
   if (!wo) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
@@ -45,31 +46,47 @@ export async function PATCH(request: NextRequest, props: { params: Promise<{ id:
   }
 
   const action = parsed.action;
-  switch (action.kind) {
-    case "assign": {
-      if (action.assigned_to !== null && !getTechnician(action.assigned_to)) {
-        return NextResponse.json({ error: "Unknown technician." }, { status: 422 });
-      }
-      assignWorkOrder(wo.id, action.assigned_to);
-      break;
-    }
-    case "status":
-      setWorkOrderStatus(wo.id, action.status);
-      break;
-    case "due":
-      setWorkOrderDueDate(wo.id, action.due_at);
-      break;
-    case "add_part": {
-      if (!getPart(action.part_id)) {
-        return NextResponse.json({ error: "Unknown part." }, { status: 422 });
-      }
-      addWorkOrderPart(wo.id, action.part_id, action.qty);
-      break;
-    }
-    case "remove_part":
-      removeWorkOrderPart(wo.id, action.part_id);
-      break;
-  }
 
+  // The whole switch runs in ONE transaction, opened only after the body has
+  // been parsed and validated. That is a real improvement on the SQLite
+  // version, not just a syntax change: "check the technician exists, then
+  // assign it" and "check the part exists, then attach it" were two separate
+  // statements with a gap between them, so a concurrent delete between the
+  // check and the write would store a reference to something gone. Inside one
+  // transaction the check and the write see the same snapshot.
+  const failure = await withCurrentTenant(async (db) => {
+    switch (action.kind) {
+      case "assign": {
+        if (
+          action.assigned_to !== null &&
+          !(await getTechnician(db, action.assigned_to))
+        ) {
+          return "Unknown technician.";
+        }
+        await assignWorkOrder(db, wo.id, action.assigned_to);
+        return null;
+      }
+      case "status":
+        await setWorkOrderStatus(db, wo.id, action.status);
+        return null;
+      case "due":
+        await setWorkOrderDueDate(db, wo.id, action.due_at);
+        return null;
+      case "add_part": {
+        if (!(await getPart(db, action.part_id))) {
+          return "Unknown part.";
+        }
+        await addWorkOrderPart(db, wo.id, action.part_id, action.qty);
+        return null;
+      }
+      case "remove_part":
+        await removeWorkOrderPart(db, wo.id, action.part_id);
+        return null;
+    }
+  });
+
+  if (failure) {
+    return NextResponse.json({ error: failure }, { status: 422 });
+  }
   return NextResponse.json({ id: wo.id, ok: true });
 }

@@ -16,6 +16,7 @@ import {
   getRiskBandCounts,
   getTopRiskAssets,
 } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 import { RISK_BAND_LABELS, type RiskBand } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -28,11 +29,18 @@ const BAND_BAR: Record<RiskBand, string> = {
   critical: "bg-risk-critical",
 };
 
-export default function DashboardPage() {
-  const kpis = getKpis();
-  const topAssets = getTopRiskAssets(10);
-  const anomalies = getRecentAnomalies(10);
-  const bandCounts = getRiskBandCounts();
+export default async function DashboardPage() {
+  // All four reads in ONE transaction. On SQLite these were four separate
+  // statements against a file that the 6-hourly reset could swap underneath
+  // them; here the dashboard is a single consistent snapshot.
+  const { kpis, topAssets, anomalies, bandCounts } = await withCurrentTenant(
+    async (db) => ({
+      kpis: await getKpis(db),
+      topAssets: await getTopRiskAssets(db, 10),
+      anomalies: await getRecentAnomalies(db, 10),
+      bandCounts: await getRiskBandCounts(db),
+    }),
+  );
   const total = bandCounts.reduce((s, b) => s + b.c, 0);
   const countFor = (band: RiskBand) =>
     bandCounts.find((b) => b.risk_band === band)?.c ?? 0;

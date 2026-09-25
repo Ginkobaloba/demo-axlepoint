@@ -809,3 +809,79 @@ SQL injection: injected SQL can call `set_config('app.tenant_id', x, false)`,
 which persists on a pooled client beyond the transaction. **Tenant filtering in
 the `WHERE` clause remains the primary control**; parameterised queries remain
 the defence against injection. RLS is the net under both.
+
+## D-024: The query layer is async, tenant-scoped, and Postgres-dialect (2026-09-25)
+
+~44 query functions and all 21 of their callers ported from better-sqlite3 to
+Postgres. Every function now takes a `TenantDb` first and returns `Promise<T>`.
+`src/lib/db.ts` and the generator still exist and still speak SQLite; nothing on
+the app's path uses them any more. Removing them, and porting the seed, is the
+next step.
+
+**The Promise<T> is the mechanism, not a side effect.** A missed `await` on a
+function that used to return data is not reliably loud: `.map()` on a Promise
+throws, but a Promise passed into JSX renders nothing and a Promise in a boolean
+test is always truthy. Making every return type `Promise<T>` turned the whole
+class into a compile error -- `tsc` produced exactly 300 of them across 20 files
+and that list WAS the work plan. `queries.types.test.ts` asserts the contract by
+ENUMERATING the module's exports, so a 45th function cannot escape by not being
+mentioned, and a mutation making one function synchronous fails it.
+
+**Tenancy is in the WHERE clause, redundantly with RLS.** D-022 already forces
+RLS on every table. App-level filtering stays primary: it is testable without a
+database, does not depend on driver transaction semantics, and survives a role
+that bypasses RLS. `src/lib/tenant.ts` is the ONE place the tenant is decided,
+so wiring portal-backed tenancy later touches no query function.
+
+### The dialect changes that would have failed SILENTLY
+
+These are the ones worth remembering; the loud ones fixed themselves.
+
+- **Postgres folds unquoted identifiers to lower case.** `MAX(risk_score)
+  maxScore` returns a column named `maxscore`. The query succeeds, TypeScript
+  still says `maxScore`, and every value is `undefined`. Now `AS "maxScore"`.
+  Same for `"avgScore"`.
+- **`int8` arrives as a STRING.** node-postgres does that deliberately, because
+  64-bit integers can exceed `Number.MAX_SAFE_INTEGER`. `COUNT(*)` is int8 and
+  every timestamp column is `bigint`, so `{ ts: number }` would have held
+  `"1700000000"` while the type insisted otherwise. Fixed twice over: a type
+  parser in `pg.ts`, and `::int` casts in SQL so arithmetic does not depend on
+  a global setting.
+- **SQLite's `LIKE` is case-insensitive for ASCII; Postgres's is not.** The
+  asset search would have kept working and quietly stopped matching "Pump" for
+  "pump". Now `ILIKE`.
+- **`SELECT po.*` with `GROUP BY po.id` stopped being legal** -- Postgres allows
+  it only when the grouped columns are the PRIMARY KEY, and D-022 made the key
+  composite. A tenancy decision in the schema changed what is legal in a query
+  three files away. Now `GROUP BY po.tenant_id, po.id`.
+- **`createWorkOrder` lost its concurrency safety.** It reads `meta.wo_seq`,
+  increments, writes back. better-sqlite3 serialises writers so that was
+  implicitly safe; Postgres runs transactions concurrently, so two calls both
+  read 5 and both build `WO-6`. Now `SELECT ... FOR UPDATE`. Same for `po_seq`.
+
+Loud ones, for completeness: `ROUND(double precision, int)` does not exist (only
+`ROUND(numeric, int)`); `strftime(..., 'unixepoch')` becomes
+`to_char(to_timestamp(...), ...)`; and `getAnomaliesByDay` grouped by one
+expression while ordering by an ungrouped column, which SQLite tolerates and
+Postgres rejects.
+
+### Two things the port improved rather than preserved
+
+- **Check-then-write races closed.** `PATCH /api/work-orders/[id]` validated the
+  technician or part in one statement and wrote in another. Both now share one
+  transaction, so the check and the write see the same snapshot.
+- **Pages render from one snapshot.** The dashboard's four reads were four
+  separate statements against a file the 6-hourly reset could swap underneath
+  them.
+
+**A transaction is never held across `await request.json()`.** Route handlers
+parse and validate first, then open one. Holding a pooled client and its row
+locks for as long as a caller takes to send a body is time an attacker chooses.
+
+### Deployment consequence, stated plainly
+
+**After this merges, AxlePoint cannot be redeployed until a Postgres exists for
+it.** Merging is safe: `next build` never reads the database (proved by deletion,
+see verify.yml), every route is `force-dynamic`, and the live demo keeps serving
+its existing image -- merged is not deployed. But the next deploy needs
+`DATABASE_URL`, and `pg.ts` fails loudly without one rather than falling back.

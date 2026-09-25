@@ -14,6 +14,7 @@ import {
   getWoByTypeAndStatus,
   getWoMonthlyThroughput,
 } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -39,13 +40,16 @@ function Tile({
   );
 }
 
-export default function ReportsPage() {
-  const throughput = getWoMonthlyThroughput();
-  const anomalyTrend = getAnomaliesByDay(30);
-  const bySensor = getAnomaliesBySensor();
-  const byLocation = getRiskByLocation();
-  const spend = getPartsSpendByCategory().slice(0, 8);
-  const mixRaw = getWoByTypeAndStatus();
+export default async function ReportsPage() {
+  const { throughput, anomalyTrend, bySensor, byLocation, spend, mixRaw } =
+    await withCurrentTenant(async (db) => ({
+      throughput: await getWoMonthlyThroughput(db),
+      anomalyTrend: await getAnomaliesByDay(db, 30),
+      bySensor: await getAnomaliesBySensor(db),
+      byLocation: await getRiskByLocation(db),
+      spend: (await getPartsSpendByCategory(db)).slice(0, 8),
+      mixRaw: await getWoByTypeAndStatus(db),
+    }));
 
   const mix = ["corrective", "preventive", "inspection", "predictive"].map(
     (type) => ({

@@ -3,13 +3,14 @@ import { CreateReorderPoButton } from "@/components/create-reorder-po-button";
 import { PartsTable } from "@/components/parts-table";
 import { fmtMoney, fmtNumber } from "@/lib/format";
 import { getParts } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Parts" };
 
-export default function PartsPage() {
-  const parts = getParts();
+export default async function PartsPage() {
+  const parts = await withCurrentTenant((db) => getParts(db));
   const lowStock = parts.filter((p) => p.qty_on_hand < p.reorder_point);
   const stockValue = parts.reduce((s, p) => s + p.qty_on_hand * p.unit_cost, 0);
   const longLead = parts.filter((p) => p.lead_time_days >= 30);

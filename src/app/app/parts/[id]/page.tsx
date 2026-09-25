@@ -13,6 +13,7 @@ import {
   getPartConsumingWorkOrders,
   getPartPurchaseOrders,
 } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -22,11 +23,18 @@ export default async function PartDetailPage(
   }
 ) {
   const params = await props.params;
-  const part = getPart(params.id);
-  if (!part) notFound();
+  const data = await withCurrentTenant(async (db) => {
+    const part = await getPart(db, params.id);
+    if (!part) return null;
+    return {
+      part,
+      workOrders: await getPartConsumingWorkOrders(db, part.id),
+      pos: await getPartPurchaseOrders(db, part.id),
+    };
+  });
+  if (!data) notFound();
+  const { part, workOrders, pos } = data;
   const low = part.qty_on_hand < part.reorder_point;
-  const workOrders = getPartConsumingWorkOrders(part.id);
-  const pos = getPartPurchaseOrders(part.id);
 
   const FACTS: [string, string][] = [
     ["Supplier", part.supplier],

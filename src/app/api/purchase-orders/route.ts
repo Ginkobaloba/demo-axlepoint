@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createReorderPurchaseOrders } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 /**
  * Create draft reorder purchase orders. Body may include a part_ids array to
@@ -18,7 +19,13 @@ export async function POST(request: NextRequest) {
     // No body is fine: restock all below-reorder parts.
   }
 
-  const result = createReorderPurchaseOrders(partIds);
+  // One transaction, opened AFTER the body is parsed. Holding a database
+  // transaction open across `await request.json()` would keep a pooled
+  // client and its row locks tied up for as long as a client takes to send
+  // a body, which a slow or hostile caller controls.
+  const result = await withCurrentTenant((db) =>
+    createReorderPurchaseOrders(db, partIds),
+  );
   if (result.created === 0) {
     return NextResponse.json(
       { error: "Nothing to reorder.", ...result },

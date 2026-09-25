@@ -2,13 +2,14 @@ import Link from "next/link";
 import { Plus } from "lucide-react";
 import { WorkOrdersTable } from "@/components/work-orders-table";
 import { getWorkOrders } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Work Orders" };
 
-export default function WorkOrdersPage() {
-  const orders = getWorkOrders();
+export default async function WorkOrdersPage() {
+  const orders = await withCurrentTenant((db) => getWorkOrders(db));
 
   return (
     <div className="space-y-4">

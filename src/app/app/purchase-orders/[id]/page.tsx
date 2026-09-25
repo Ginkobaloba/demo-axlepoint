@@ -5,6 +5,7 @@ import { PoStatusChip } from "@/components/badges";
 import { PurchaseOrderActions } from "@/components/purchase-order-actions";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { getPurchaseOrder, getPurchaseOrderLines } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -14,9 +15,13 @@ export default async function PurchaseOrderDetailPage(
   }
 ) {
   const params = await props.params;
-  const po = getPurchaseOrder(params.id);
-  if (!po) notFound();
-  const lines = getPurchaseOrderLines(po.id);
+  const data = await withCurrentTenant(async (db) => {
+    const po = await getPurchaseOrder(db, params.id);
+    if (!po) return null;
+    return { po, lines: await getPurchaseOrderLines(db, po.id) };
+  });
+  if (!data) notFound();
+  const { po, lines } = data;
   const total = lines.reduce((s, l) => s + l.qty * l.unit_cost, 0);
 
   const dates: [string, number | null][] = [

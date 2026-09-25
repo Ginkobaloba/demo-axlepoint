@@ -8,6 +8,7 @@ import {
 } from "@/lib/work-order-validation";
 import { deriveRecommendedWorkOrder } from "@/lib/predictive-action";
 import { isValidIsoDate } from "@/lib/schedule-view";
+import { withCurrentTenant } from "@/lib/tenant";
 
 const PRIORITIES = ["low", "medium", "high", "urgent"];
 const TYPES = ["corrective", "preventive", "inspection", "predictive"];
@@ -29,7 +30,6 @@ export async function POST(request: NextRequest) {
     ? Object.fromEntries((await request.formData()).entries())
     : await request.json();
 
-  const asset = getAsset(String(raw.asset_id ?? ""));
   const title = String(raw.title ?? "").trim();
   const priority = String(raw.priority ?? "medium");
   const type = String(raw.type ?? "preventive");
@@ -44,15 +44,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: reason }, { status });
   };
 
-  if (!asset || !title || !PRIORITIES.includes(priority) || !TYPES.includes(type)) {
-    return reject(400, "Pick an asset and a valid title, type, and priority.");
-  }
+  // Everything from the asset lookup to the INSERT runs in ONE transaction.
+  // The body is already fully read above, so nothing here waits on the
+  // network, and the validations that need the database (does this asset
+  // exist, is this a real technician) now share a snapshot with the write they
+  // guard rather than racing it.
+  const outcome = await withCurrentTenant(async (db) => {
+    const asset = await getAsset(db, String(raw.asset_id ?? ""));
+    if (!asset || !title || !PRIORITIES.includes(priority) || !TYPES.includes(type)) {
+      return { ok: false as const, status: 400, reason: "Pick an asset and a valid title, type, and priority." };
+    }
 
   // Reject test fixtures and junk so they cannot accumulate in the live demo.
-  const screen = screenWorkOrderTitle(title);
-  if (!screen.ok) {
-    return reject(422, screen.reason ?? "Invalid title.");
-  }
+    const screen = screenWorkOrderTitle(title);
+    if (!screen.ok) {
+      return { ok: false as const, status: 422, reason: screen.reason ?? "Invalid title." };
+    }
 
   // assigned_to has no FK (schema: TEXT), so it must be checked here rather
   // than trusted. Deep-verify PR #24 blocker B1: an unvalidated string here
@@ -60,17 +67,17 @@ export async function POST(request: NextRequest) {
   // work-orders list and detail RSC payload -- the exact leak this PR
   // exists to close, in a field D-012 wrongly called safe. Empty/absent
   // clears the field; anything else must be a real technician id.
-  const assignedToRaw =
-    raw.assigned_to !== undefined && raw.assigned_to !== null
-      ? String(raw.assigned_to).trim()
-      : "";
-  let assignedTo: string | null = null;
-  if (assignedToRaw) {
-    if (!getTechnician(assignedToRaw)) {
-      return reject(422, "Unknown technician.");
+    const assignedToRaw =
+      raw.assigned_to !== undefined && raw.assigned_to !== null
+        ? String(raw.assigned_to).trim()
+        : "";
+    let assignedTo: string | null = null;
+    if (assignedToRaw) {
+      if (!(await getTechnician(db, assignedToRaw))) {
+        return { ok: false as const, status: 422, reason: "Unknown technician." };
+      }
+      assignedTo = assignedToRaw;
     }
-    assignedTo = assignedToRaw;
-  }
 
   // W4/W5 (deep-verify PR #24): PATCH already 422s on an unparseable due
   // date (wo-actions.ts); this route silently stored NULL instead (W4,
@@ -82,14 +89,14 @@ export async function POST(request: NextRequest) {
   // a round-trip check to reject overflow, so shape AND calendar validity
   // match between POST and PATCH. Trimmed-empty/whitespace-only still
   // means "no due date" (clear), same as PATCH's trimmed-empty check.
-  const dueRaw = String(raw.due_date ?? "").trim();
-  let dueAt: number | null = null;
-  if (dueRaw) {
-    if (!isValidIsoDate(dueRaw)) {
-      return reject(422, "Invalid due date.");
+    const dueRaw = String(raw.due_date ?? "").trim();
+    let dueAt: number | null = null;
+    if (dueRaw) {
+      if (!isValidIsoDate(dueRaw)) {
+        return { ok: false as const, status: 422, reason: "Invalid due date." };
+      }
+      dueAt = Math.floor(new Date(`${dueRaw}T12:00:00`).getTime() / 1000);
     }
-    dueAt = Math.floor(new Date(`${dueRaw}T12:00:00`).getTime() / 1000);
-  }
 
   // Anonymous by design (D-012): the visitor's literal title and
   // description are validated above but never persisted. What is stored
@@ -97,23 +104,30 @@ export async function POST(request: NextRequest) {
   // type for most requests, or (for the "Recommend Preventive Action"
   // headline flow) the asset's own risk_factors, so that flow keeps
   // telling its story instead of degrading to a generic placeholder.
-  const { title: storedTitle, description: storedDescription } =
-    type === "predictive"
-      ? deriveRecommendedWorkOrder(asset)
-      : {
-          title: deriveWorkOrderTitle(asset.name, type as WorkOrderType),
-          description: DISCARDED_DESCRIPTION_NOTICE,
-        };
+    const { title: storedTitle, description: storedDescription } =
+      type === "predictive"
+        ? deriveRecommendedWorkOrder(asset)
+        : {
+            title: deriveWorkOrderTitle(asset.name, type as WorkOrderType),
+            description: DISCARDED_DESCRIPTION_NOTICE,
+          };
 
-  const id = createWorkOrder({
-    asset_id: asset.id,
-    title: storedTitle,
-    description: storedDescription,
-    priority: priority as WorkOrderPriority,
-    type: type as WorkOrderType,
-    assigned_to: assignedTo,
-    due_at: dueAt,
+    const id = await createWorkOrder(db, {
+      asset_id: asset.id,
+      title: storedTitle,
+      description: storedDescription,
+      priority: priority as WorkOrderPriority,
+      type: type as WorkOrderType,
+      assigned_to: assignedTo,
+      due_at: dueAt,
+    });
+    return { ok: true as const, id };
   });
+
+  if (!outcome.ok) {
+    return reject(outcome.status, outcome.reason);
+  }
+  const id = outcome.id;
 
   // W2 (deep-verify PR #24, pre-existing on main): building an absolute
   // URL from request.url ships Location: http://0.0.0.0:3000/... behind

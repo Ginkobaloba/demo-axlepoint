@@ -17,6 +17,7 @@ import {
   getWorkOrder,
   getWorkOrderParts,
 } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -28,12 +29,19 @@ export default async function WorkOrderDetailPage(
 ) {
   const searchParams = await props.searchParams;
   const params = await props.params;
-  const wo = getWorkOrder(params.id);
-  if (!wo) notFound();
-  const parts = getWorkOrderParts(wo.id);
-  const asset = getAsset(wo.asset_id);
-  const technicians = getTechnicians();
-  const catalog = getParts();
+  const data = await withCurrentTenant(async (db) => {
+    const wo = await getWorkOrder(db, params.id);
+    if (!wo) return null;
+    return {
+      wo,
+      parts: await getWorkOrderParts(db, wo.id),
+      asset: await getAsset(db, wo.asset_id),
+      technicians: await getTechnicians(db),
+      catalog: await getParts(db),
+    };
+  });
+  if (!data) notFound();
+  const { wo, parts, asset, technicians, catalog } = data;
   const dueDateIso = wo.due_at
     ? format(new Date(wo.due_at * 1000), "yyyy-MM-dd")
     : null;

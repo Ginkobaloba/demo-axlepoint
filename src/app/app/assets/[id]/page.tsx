@@ -26,6 +26,7 @@ import {
   getAssetWorkOrders,
   getGeneratedAt,
 } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 import { MODEL_CONFIDENCE } from "@/lib/risk";
 import type { RiskBand, RiskFactor } from "@/lib/types";
 
@@ -50,10 +51,20 @@ export default async function AssetDetailPage(
   }
 ) {
   const params = await props.params;
-  const asset = getAsset(params.id);
-  if (!asset) notFound();
-
-  const availableSensors = getAssetSensors(asset.id);
+  const data = await withCurrentTenant(async (db) => {
+    const asset = await getAsset(db, params.id);
+    if (!asset) return null;
+    const now = await getGeneratedAt(db);
+    return {
+      asset,
+      availableSensors: await getAssetSensors(db, asset.id),
+      recentAnomalies: await getAssetAnomalies(db, asset.id, now - 7 * 86400),
+      workOrders: await getAssetWorkOrders(db, asset.id),
+      schedule: await getAssetSchedule(db, asset.id),
+    };
+  });
+  if (!data) notFound();
+  const { asset, availableSensors, recentAnomalies, workOrders, schedule } = data;
   const allFactors = JSON.parse(asset.risk_factors) as RiskFactor[];
   const factors = allFactors.filter((f) => f.contribution > 0);
   const topFactor = factors[0] ?? null;
@@ -63,10 +74,7 @@ export default async function AssetDetailPage(
     ...allFactors.map((f) => f.sensor).filter((s) => availableSensors.includes(s)),
     ...availableSensors.filter((s) => !allFactors.some((f) => f.sensor === s)),
   ];
-  const now = getGeneratedAt();
-  const recentAnomalies = getAssetAnomalies(asset.id, now - 7 * 86400);
-  const workOrders = getAssetWorkOrders(asset.id);
-  const schedule = getAssetSchedule(asset.id);
+
 
   return (
     <div className="space-y-6">

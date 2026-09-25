@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getAssets, getTechnicians } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 import { MIN_TITLE_LEN } from "@/lib/work-order-validation";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +14,10 @@ export default async function NewWorkOrderPage(
   }
 ) {
   const searchParams = await props.searchParams;
-  const assets = getAssets();
-  const technicians = getTechnicians();
+  const { assets, technicians } = await withCurrentTenant(async (db) => ({
+    assets: await getAssets(db),
+    technicians: await getTechnicians(db),
+  }));
   const preselected = searchParams.asset;
   const error = searchParams.error;
 
