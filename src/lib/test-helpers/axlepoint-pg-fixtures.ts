@@ -26,7 +26,7 @@ export async function seedFixturePg(
     path.join(process.cwd(), "db", "schema.sql"),
     "utf8",
   );
-  await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.query("DROP SCHEMA IF EXISTS pristine CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
   await admin.query(schema);
   // schema.sql deliberately ships no password; set one for local connections.
   await admin.query("ALTER ROLE axlepoint_app PASSWORD 'axlepoint_app'");

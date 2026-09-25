@@ -77,7 +77,7 @@ beforeAll(async () => {
   admin = new Pool({ connectionString: adminUrl });
 
   const sql = fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
-  await admin.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+  await admin.query("DROP SCHEMA IF EXISTS pristine CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
   await admin.query(sql);
   // schema.sql deliberately carries NO password -- a credential in a committed
   // file is a credential in every clone. Dev sets it out of band, which is what
@@ -268,9 +268,16 @@ describe("RLS coverage is total", () => {
       rowsecurity: boolean;
       relforcerowsecurity: boolean;
     }>(
+      // JOIN ON relname ALONE WAS A REAL BUG, not a tidiness point. It was
+      // raised in review as theoretical and became actual the moment
+      // db/schema.sql added pristine.* tables with the SAME NAMES as public.*:
+      // the join then matched the pristine copies, which correctly have no RLS,
+      // and this test failed against a perfectly good schema. Qualify by
+      // namespace or a catalog join will find whatever else shares a name.
       `SELECT t.tablename, t.rowsecurity, c.relforcerowsecurity
          FROM pg_tables t
-         JOIN pg_class c ON c.relname = t.tablename
+         JOIN pg_namespace n ON n.nspname = t.schemaname
+         JOIN pg_class c ON c.relname = t.tablename AND c.relnamespace = n.oid
         WHERE t.schemaname = 'public'
         ORDER BY t.tablename`,
     );
@@ -386,13 +393,18 @@ describe("relations RLS cannot cover do not exist", () => {
 
 describe("no second policy can quietly widen a table", () => {
   it("every table has exactly one permissive policy, covering ALL commands", async () => {
+    // PERMISSIVE ONLY. Permissive policies are OR-ed, so a second one WIDENS a
+    // table and is what this test exists to catch. Restrictive policies are
+    // AND-ed and can only narrow, which is why db/schema.sql uses one to
+    // confine the demo_reset role (D-026); counting it here would make this
+    // test fail on a change that made the schema stricter.
     const { rows } = await admin.query<{
       tablename: string;
       n: string;
       cmds: string;
     }>(
       `SELECT tablename, count(*)::text AS n, string_agg(DISTINCT cmd, ',') AS cmds
-         FROM pg_policies WHERE schemaname = 'public'
+         FROM pg_policies WHERE schemaname = 'public' AND permissive = 'PERMISSIVE'
         GROUP BY tablename ORDER BY tablename`,
     );
     expect(rows.length).toBeGreaterThan(0);

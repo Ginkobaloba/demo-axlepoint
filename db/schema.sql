@@ -309,3 +309,98 @@ $$;
 -- ---------------------------------------------------------------------------
 GRANT USAGE ON SCHEMA public TO axlepoint_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO axlepoint_app;
+
+-- ===========================================================================
+-- THE DEMO RESET: a pristine schema and a role confined to the sample tenant.
+--
+-- The 6-hourly reset exists so visitor-entered text cannot outlive one interval
+-- (D-012). On SQLite it was a file copy. Here it is "restore tenant sample",
+-- and the interesting part is doing it WITHOUT weakening anything.
+--
+-- The obvious designs are both bad. Storing the pristine copy AS another tenant
+-- forces a cross-tenant read, which RLS correctly forbids, leading to either
+-- BYPASSRLS (the exact hazard D-023 removed) or a SECURITY DEFINER function
+-- (a privilege-escalation vector the moment its search_path is not pinned).
+--
+-- So the pristine data is NOT a tenant. It lives in its own schema with no
+-- tenant_id and no RLS, and the reset reads it while scoped to the sample
+-- tenant on the live tables. One transaction, single-tenant, RLS fully in
+-- force on everything it writes.
+-- ===========================================================================
+
+CREATE SCHEMA pristine;
+
+-- Same shapes as public, minus tenant_id. Built from the live tables so the
+-- two cannot drift: adding a column to a public table gives the pristine copy
+-- the same column automatically on the next apply.
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+    -- LIKE ... INCLUDING DEFAULTS, not "AS SELECT ... WITH NO DATA". The
+    -- latter copies column types and nothing else: anomalies.id lost its
+    -- gen_random_uuid() default, so every pristine row got a NULL id and the
+    -- restore failed on the NOT NULL. Defaults are part of the shape.
+    EXECUTE format(
+      'CREATE TABLE pristine.%I (LIKE public.%I INCLUDING DEFAULTS)', t, t);
+    EXECUTE format('ALTER TABLE pristine.%I DROP COLUMN tenant_id', t);
+  END LOOP;
+END
+$$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'demo_reset') THEN
+    CREATE ROLE demo_reset LOGIN;
+  END IF;
+END
+$$;
+
+-- Same unconditional re-assert as axlepoint_app, for the same reason: a
+-- CREATE ROLE guarded by IF NOT EXISTS runs once in the life of a cluster, so
+-- attributes written there stop being enforced the moment the role exists.
+ALTER ROLE demo_reset NOSUPERUSER NOBYPASSRLS NOREPLICATION NOCREATEDB NOCREATEROLE;
+
+GRANT USAGE ON SCHEMA pristine TO demo_reset;
+GRANT SELECT ON ALL TABLES IN SCHEMA pristine TO demo_reset;
+GRANT USAGE ON SCHEMA public TO demo_reset;
+GRANT SELECT, INSERT, DELETE ON ALL TABLES IN SCHEMA public TO demo_reset;
+
+-- The app role must NOT be able to read the pristine dataset. It has no reason
+-- to, and the reset's whole safety argument is that pristine is reachable only
+-- by a role that cannot leave the sample tenant.
+REVOKE ALL ON SCHEMA pristine FROM axlepoint_app;
+
+-- ---------------------------------------------------------------------------
+-- A RESTRICTIVE policy, which is what actually confines the reset role.
+--
+-- MEASURED FIRST, because the obvious version does not confine anything:
+-- app.tenant_id is set BY THE CONNECTING ROLE, so a reset role that can set it
+-- can set it to a paying customer and RLS will happily scope to that instead.
+-- Verified 2026-09-25 on a scratch table: with only the permissive policy,
+-- demo_reset scoped to a second tenant read that tenant's row.
+--
+-- RESTRICTIVE policies are AND-ed with the permissive ones rather than OR-ed,
+-- so this pins demo_reset to the sample tenant REGARDLESS of the GUC. Verified
+-- the same way: scoped to another tenant it then read nothing, its INSERT was
+-- refused with "new row violates row-level security policy", and its DELETE
+-- left that tenant's rows intact -- while the sample tenant stayed fully
+-- readable.
+--
+-- It names no other role, so it constrains demo_reset alone and leaves
+-- axlepoint_app's behaviour untouched.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  t text;
+BEGIN
+  FOR t IN SELECT tablename FROM pg_tables WHERE schemaname = 'public' LOOP
+    EXECUTE format($f$
+      CREATE POLICY reset_sample_only ON %I AS RESTRICTIVE TO demo_reset
+        USING      (tenant_id = 'sample')
+        WITH CHECK (tenant_id = 'sample')
+    $f$, t);
+  END LOOP;
+END
+$$;
