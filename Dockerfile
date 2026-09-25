@@ -21,14 +21,14 @@
 
 FROM node:22-bookworm-slim AS deps
 WORKDIR /app
-# better-sqlite3@12.10.0 ships a prebuilt binary for node 22 linux-x64
-# (ABI 127), so this normally installs from the prebuild, not a compile.
-# The toolchain stays anyway as a fallback: a docker build with it removed
-# hit a prebuild-install network timeout once (2026-09-19, observed on the
-# lumen-analytics sibling repo during this same change) with nothing to
-# fall back to, and failed outright. Kept here, in the build stage only,
-# so a flaky prebuild download degrades to a slower compile instead of a
-# hard build failure.
+# The compile toolchain is no longer needed for better-sqlite3, which is
+# gone (D-026). It is KEPT, not removed, because esbuild and unrs-resolver
+# still install from prebuilt binaries and a prebuild download that times
+# out falls back to compiling -- which is what failed outright on the
+# lumen-analytics sibling on 2026-09-19 with no toolchain to fall back to.
+# Removing it would be a change whose failure mode cannot be observed here,
+# because docker build is blocked earlier on read:packages. Drop it once a
+# build can actually be run and proven.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*

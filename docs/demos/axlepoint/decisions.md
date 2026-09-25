@@ -948,3 +948,71 @@ value). The options are a `SECURITY DEFINER` function owned by the table owner
 (with `search_path` pinned, or it is a privilege-escalation vector), or a
 separate reset role. **Giving the app role BYPASSRLS is not an option** -- that
 is exactly the hazard D-023 removed.
+
+## D-026: The demo reset, and retiring SQLite (2026-09-25)
+
+The 6-hourly reset that D-012 depends on now exists on Postgres, so
+`src/lib/db.ts`, its test and the SQLite fixture are deleted in the same change
+that replaces them. `better-sqlite3` is gone from the dependency tree.
+
+**The pristine dataset is not a tenant.** Storing it as one would force a
+cross-tenant read, which RLS correctly forbids, leading to either `BYPASSRLS`
+(the hazard D-023 removed) or a `SECURITY DEFINER` function (a
+privilege-escalation vector the moment its `search_path` is unpinned). Instead
+`pristine.*` is a separate schema with no `tenant_id` and no RLS, built from the
+live tables with `LIKE ... INCLUDING DEFAULTS` so the two cannot drift. The
+reset reads it while scoped to the sample tenant: one transaction,
+single-tenant, RLS fully in force on everything it writes.
+
+**A RESTRICTIVE policy is what actually confines the reset role, and the
+obvious version confines nothing.** `app.tenant_id` is set BY the connecting
+role, so a reset role that can set it can name a paying customer and RLS will
+scope to that instead. Measured before building on it: with only the permissive
+policy, `demo_reset` scoped to a second tenant read that tenant's row.
+Restrictive policies are AND-ed rather than OR-ed, so `reset_sample_only` pins
+the role to the sample tenant regardless of the GUC. Re-measured after: scoped
+elsewhere it reads nothing, its INSERT is refused with "new row violates
+row-level security policy", and its DELETE leaves the other tenant intact --
+while the sample tenant stays fully readable.
+
+**The reset refuses to run where RLS would not apply.** Its DELETE carries no
+`WHERE`, because RLS is the thing scoping it. Run as a superuser -- which the
+seeding connection is on a local Docker Postgres -- RLS is inert and the same
+statement removes EVERY tenant's rows. `refuseIfRlsIsInert()` checks
+`rolsuper`/`rolbypassrls` and throws. Adding a belt-and-braces
+`WHERE tenant_id = $1` would have been worse: it would let the function survive
+a missing policy, which is exactly the condition the isolation tests must be
+able to detect.
+
+**Seeding goes through the reset.** `npm run db:generate` writes `pristine`,
+then populates the live tenant by calling the same function the demo runs every
+six hours. A broken reset is therefore visible at seed time rather than six
+hours later in production.
+
+Mutation-checked, all five red: `demo_reset` granted `BYPASSRLS` (7 failed);
+the restrictive policy removed (4); the policy pinned to `USING (true)` (2);
+the superuser guard removed (2); `pristine` made readable by the app role (1).
+
+**Two of my own earlier tests had to be corrected, and one was a real latent
+bug.** The RLS-coverage test joined `pg_class` on `relname` alone -- raised in
+review as theoretical, and now actual: `pristine.*` tables share names with
+`public.*`, so the join matched the copies, which correctly have no RLS. It is
+now namespace-qualified. The "exactly one policy" test now counts PERMISSIVE
+policies only, since permissive policies are OR-ed and widen a table, while
+restrictive ones are AND-ed and can only narrow.
+
+### The throttle is gone on purpose, and the schedule is not written yet
+
+The SQLite reset was triggered from `getDb()` inside the request path, throttled
+by a module-level timestamp. That timestamp does not survive a process restart,
+so **the throttle broke before the reset did**. It is not reimplemented.
+
+The schedule is now an operations concern -- cron, a Cloudflare cron trigger, or
+a DO alarm -- running `npm run db:reset` outside the app process with the
+`demo_reset` credential. The app role cannot reset at all.
+
+**UNTIL SOMETHING SCHEDULES IT, D-012's retention promise is not being kept on a
+deployed instance.** Stated here rather than left implicit, because a reset that
+exists and never runs looks exactly like a reset that works. AxlePoint is not
+deployable yet anyway (no Postgres), so this must be wired up as part of that
+deploy, not after it.

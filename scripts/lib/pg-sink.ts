@@ -35,7 +35,16 @@ const MAX_PARAMS_PER_STATEMENT = 30000;
 export class PgSink {
   private readonly tables = new Map<string, { cols: string[]; rows: Row[] }>();
 
-  constructor(private readonly tenantId: string) {}
+  /**
+   * `schema` is where rows are written. The generator targets `pristine`,
+   * which has no tenant_id -- the live tenant is populated FROM pristine by
+   * the reset, so the seed and the reset share one code path and cannot
+   * disagree about what the pristine world contains.
+   */
+  constructor(
+    private readonly schema: string,
+    private readonly tenantId?: string,
+  ) {}
 
   /**
    * better-sqlite3's `db.transaction(fn)` returns a function that runs `fn` in
@@ -157,7 +166,7 @@ export class PgSink {
     try {
       for (const [table, { cols, rows }] of this.tables) {
         if (!rows.length) continue;
-        const allCols = ["tenant_id", ...cols];
+        const allCols = this.tenantId ? ["tenant_id", ...cols] : [...cols];
         const perRow = allCols.length;
         const rowsPerStatement = Math.max(
           1,
@@ -168,14 +177,15 @@ export class PgSink {
           const chunk = rows.slice(i, i + rowsPerStatement);
           const params: unknown[] = [];
           const tuples = chunk.map((row) => {
-            const placeholders = [this.tenantId, ...row].map((v) => {
+            const values = this.tenantId ? [this.tenantId, ...row] : row;
+            const placeholders = values.map((v) => {
               params.push(v);
               return `$${params.length}`;
             });
             return `(${placeholders.join(",")})`;
           });
           await client.query(
-            `INSERT INTO ${table} (${allCols.join(",")}) VALUES ${tuples.join(",")}`,
+            `INSERT INTO ${this.schema}.${table} (${allCols.join(",")}) VALUES ${tuples.join(",")}`,
             params,
           );
         }

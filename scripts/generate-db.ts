@@ -1,7 +1,7 @@
 /**
  * AxlePoint synthetic data generator.
  *
- * Builds data/axlepoint.db from scratch: 100 assets across 8 sites,
+ * Builds the PRISTINE dataset from scratch: 100 assets across 8 sites,
  * ~6 months of sensor history per asset (hourly for the trailing 14 days,
  * 6-hourly before that), anomalies detected with the same EWMA z-score
  * detector the UI uses, risk scores, 150 work orders, 80 parts,
@@ -12,18 +12,20 @@
  *
  * All data is synthetic. Sites, models, suppliers, and people are fictional.
  *
- * Also writes axlepoint.seed.db, a byte-identical snapshot of the freshly
- * generated database. The running app resets the live database back to
- * this snapshot on a schedule so visitor writes never accumulate (council
- * item 1.2, docs/demos/axlepoint/decisions.md D-012; see src/lib/db.ts).
- * Writing it here keeps this script the single source of truth for both
- * files: a developer running `npm run db:generate` after touching
- * anomaly.ts/risk.ts gets a matching seed snapshot for free.
+ * It writes the `pristine` schema, then populates the live tenant BY RUNNING
+ * THE DEMO RESET (src/lib/demo-reset.ts, D-026). That is deliberate: seeding
+ * and resetting share one code path, so a broken reset is visible immediately
+ * at seed time rather than six hours later in production.
+ *
+ * AXLEPOINT_NOW_TS pins the time anchor. It exists so the Postgres port could
+ * be proved row-identical against the SQLite generator it replaced (D-025),
+ * and it is useful for any test that wants a fixed world.
  */
 import fs from "fs";
 import path from "path";
 import { Pool } from "pg";
 import { PgSink } from "./lib/pg-sink";
+import { resetTenantFromPristine } from "../src/lib/demo-reset";
 import { Rng } from "../src/lib/rng";
 import {
   initState,
@@ -268,7 +270,11 @@ const degradation = new Map<string, Degradation>();
 // SQLite DDL that used to sit here was deleted rather than left as a comment:
 // a second copy of a schema is a second SOURCE of it, and the two drift.
 const TENANT = process.env.AXLEPOINT_SEED_TENANT ?? "sample";
-const db = new PgSink(TENANT);
+// The generator writes PRISTINE, not the live tenant. The live tenant is then
+// populated by the same reset the demo runs every six hours, so seeding and
+// resetting cannot drift apart: if the reset is broken, the seed is visibly
+// broken too, immediately, rather than six hours later in production.
+const db = new PgSink("pristine");
 
 // ------------------------------------------------ readings + anomaly pass
 
@@ -928,12 +934,31 @@ async function main(): Promise<void> {
     if (process.env.AXLEPOINT_SKIP_SCHEMA !== "1") {
       // Applying the schema drops and recreates public, so it is opt-out for
       // the case where the caller has already prepared the database.
-      await client.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+      await client.query("DROP SCHEMA IF EXISTS pristine CASCADE; DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
       await client.query(fs.readFileSync(SCHEMA_PATH, "utf8"));
     }
 
     const intended = db.counts();
     await db.flush(client);
+
+    // Populate the live tenant THROUGH THE RESET, as the demo will. It runs as
+    // demo_reset, never as this admin connection: resetTenantFromPristine
+    // refuses a role that can bypass RLS, because its DELETE carries no WHERE
+    // and RLS is the only thing scoping it to one tenant.
+    await client.query("ALTER ROLE demo_reset PASSWORD 'demo_reset'");
+    const resetUrl = new URL(url);
+    resetUrl.username = "demo_reset";
+    resetUrl.password = "demo_reset";
+    const resetPool = new Pool({ connectionString: resetUrl.toString() });
+    const resetClient = await resetPool.connect();
+    try {
+      const res = await resetTenantFromPristine(resetClient, TENANT);
+      const restored = res.tables.reduce((n, t) => n + t.inserted, 0);
+      console.log(`Reset restored ${restored} rows into tenant "${TENANT}".`);
+    } finally {
+      resetClient.release();
+      await resetPool.end();
+    }
 
     const q = async (sql: string, params: unknown[] = []) =>
       Number((await client.query(sql, params)).rows[0].c);

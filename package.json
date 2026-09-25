@@ -14,11 +14,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ledger:check": "node scripts/ledger.mjs check",
-    "test:rls": "vitest run --config vitest.rls.config.ts"
+    "test:rls": "vitest run --config vitest.rls.config.ts",
+    "db:reset": "tsx scripts/reset-demo.ts"
   },
   "dependencies": {
     "@paradigm-codes/auth": "^0.1.0",
-    "better-sqlite3": "^12.10.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
     "jose": "^6.2.3",
@@ -32,7 +32,6 @@
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
     "@types/pg": "^8.23.1",
     "@types/react": "^18",
