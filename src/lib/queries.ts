@@ -1,4 +1,4 @@
-import { getDb } from "./db";
+import type { TenantDb } from "./pg";
 import { completionForStatus } from "./wo-actions";
 import { recommendedReorderQty } from "./po-actions";
 import type {
@@ -17,13 +17,38 @@ import type {
   WorkOrderType,
 } from "./types";
 
+/**
+ * Every query function takes a TenantDb and returns a Promise. Both are load
+ * bearing.
+ *
+ * THE Promise<T> IS THE POINT, not a consequence of the driver. better-sqlite3
+ * was synchronous; every Postgres driver is not, so the port turns ~44 sync
+ * functions async and every one of their ~21 callers needs an await. A missed
+ * await on a function that used to return data is not reliably loud: `.map()`
+ * on a Promise throws, but a Promise passed straight into JSX renders as
+ * nothing and a Promise used in a boolean test is always truthy. Making every
+ * return type Promise<T> turns that whole class of mistake into a COMPILE
+ * error. queries.types.test.ts asserts the contract so a future `any` cannot
+ * hollow it out.
+ *
+ * TENANT SCOPING IS IN THE WHERE CLAUSE, deliberately and redundantly. RLS
+ * (D-022) also constrains every statement here, but app-level filtering is the
+ * PRIMARY control: it is testable without a database, it does not depend on a
+ * driver's transaction semantics, and it survives someone connecting as a role
+ * that bypasses RLS. RLS is the net under it, not the floor.
+ *
+ * THE DIALECT CHANGES ARE NOT ALL COSMETIC. Recorded in D-024; the ones that
+ * would have failed silently rather than loudly are marked at their call sites.
+ */
+
 const DAY = 86400;
 
-export function getGeneratedAt(): number {
-  const row = getDb()
-    .prepare("SELECT value FROM meta WHERE key = 'generated_at'")
-    .get() as { value: string };
-  return Number(row.value);
+export async function getGeneratedAt(db: TenantDb): Promise<number> {
+  const rows = await db.query<{ value: string }>(
+    "SELECT value FROM meta WHERE tenant_id = $1 AND key = 'generated_at'",
+    [db.tenantId],
+  );
+  return Number(rows[0]?.value);
 }
 
 // ----------------------------------------------------------------- dashboard
@@ -36,37 +61,41 @@ export interface Kpis {
   mtbfDeltaPct: number;
 }
 
-export function getKpis(): Kpis {
-  const db = getDb();
-  const now = getGeneratedAt();
-  const assetsMonitored = (
-    db.prepare("SELECT COUNT(*) c FROM assets").get() as { c: number }
-  ).c;
-  const criticalAssets = (
-    db
-      .prepare("SELECT COUNT(*) c FROM assets WHERE risk_band = 'critical'")
-      .get() as { c: number }
-  ).c;
-  const openWorkOrders = (
-    db
-      .prepare("SELECT COUNT(*) c FROM work_orders WHERE status != 'closed'")
-      .get() as { c: number }
-  ).c;
+export async function getKpis(db: TenantDb): Promise<Kpis> {
+  const t = db.tenantId;
+  const now = await getGeneratedAt(db);
+
+  // COUNT(*) is int8, which node-postgres returns as a STRING unless the type
+  // parser in pg.ts is registered. ::int keeps that independent of a global
+  // setting for the values that feed arithmetic.
+  const one = async (sql: string, params: unknown[] = []) =>
+    (await db.query<{ c: number }>(sql, params))[0].c;
+
+  const assetsMonitored = await one(
+    "SELECT COUNT(*)::int c FROM assets WHERE tenant_id = $1",
+    [t],
+  );
+  const criticalAssets = await one(
+    "SELECT COUNT(*)::int c FROM assets WHERE tenant_id = $1 AND risk_band = 'critical'",
+    [t],
+  );
+  const openWorkOrders = await one(
+    "SELECT COUNT(*)::int c FROM work_orders WHERE tenant_id = $1 AND status <> 'closed'",
+    [t],
+  );
 
   // Fleet MTBF proxy: fleet operating hours divided by unplanned-failure
   // work orders (corrective) raised in the window, trailing 30 days vs the
   // 30 days before that.
   const failures = (from: number, to: number) =>
-    (
-      db
-        .prepare(
-          "SELECT COUNT(*) c FROM work_orders WHERE type = 'corrective' AND created_at >= ? AND created_at < ?",
-        )
-        .get(from, to) as { c: number }
-    ).c;
+    one(
+      `SELECT COUNT(*)::int c FROM work_orders
+        WHERE tenant_id = $1 AND type = 'corrective' AND created_at >= $2 AND created_at < $3`,
+      [t, from, to],
+    );
   const fleetHours = assetsMonitored * 30 * 24;
-  const recent = Math.max(1, failures(now - 30 * DAY, now));
-  const prior = Math.max(1, failures(now - 60 * DAY, now - 30 * DAY));
+  const recent = Math.max(1, await failures(now - 30 * DAY, now));
+  const prior = Math.max(1, await failures(now - 60 * DAY, now - 30 * DAY));
   const mtbfRecent = fleetHours / recent;
   const mtbfPrior = fleetHours / prior;
 
@@ -79,10 +108,11 @@ export function getKpis(): Kpis {
   };
 }
 
-export function getTopRiskAssets(limit = 10): Asset[] {
-  return getDb()
-    .prepare("SELECT * FROM assets ORDER BY risk_score DESC LIMIT ?")
-    .all(limit) as Asset[];
+export async function getTopRiskAssets(db: TenantDb, limit = 10): Promise<Asset[]> {
+  return db.query<Asset>(
+    "SELECT * FROM assets WHERE tenant_id = $1 ORDER BY risk_score DESC LIMIT $2",
+    [db.tenantId, limit],
+  );
 }
 
 export interface AnomalyWithAsset extends Anomaly {
@@ -90,34 +120,47 @@ export interface AnomalyWithAsset extends Anomaly {
   asset_location: string;
 }
 
-export function getRecentAnomalies(limit = 12): AnomalyWithAsset[] {
-  return getDb()
-    .prepare(
-      `SELECT a.*, s.name AS asset_name, s.location AS asset_location
-       FROM anomalies a JOIN assets s ON s.id = a.asset_id
-       ORDER BY a.ts DESC LIMIT ?`,
-    )
-    .all(limit) as AnomalyWithAsset[];
+export async function getRecentAnomalies(
+  db: TenantDb,
+  limit = 12,
+): Promise<AnomalyWithAsset[]> {
+  return db.query<AnomalyWithAsset>(
+    `SELECT a.*, s.name AS asset_name, s.location AS asset_location
+       FROM anomalies a
+       JOIN assets s ON s.id = a.asset_id AND s.tenant_id = a.tenant_id
+      WHERE a.tenant_id = $1
+      ORDER BY a.ts DESC LIMIT $2`,
+    [db.tenantId, limit],
+  );
 }
 
-export function getRiskBandCounts(): { risk_band: string; c: number }[] {
-  return getDb()
-    .prepare("SELECT risk_band, COUNT(*) c FROM assets GROUP BY risk_band")
-    .all() as { risk_band: string; c: number }[];
+export async function getRiskBandCounts(
+  db: TenantDb,
+): Promise<{ risk_band: string; c: number }[]> {
+  return db.query<{ risk_band: string; c: number }>(
+    "SELECT risk_band, COUNT(*)::int c FROM assets WHERE tenant_id = $1 GROUP BY risk_band",
+    [db.tenantId],
+  );
 }
 
-export function getLocationRiskMatrix(): {
-  location: string;
-  type: string;
-  c: number;
-  maxScore: number;
-}[] {
-  return getDb()
-    .prepare(
-      `SELECT location, type, COUNT(*) c, MAX(risk_score) maxScore
-       FROM assets GROUP BY location, type`,
-    )
-    .all() as { location: string; type: string; c: number; maxScore: number }[];
+export async function getLocationRiskMatrix(db: TenantDb): Promise<
+  {
+    location: string;
+    type: string;
+    c: number;
+    maxScore: number;
+  }[]
+> {
+  // "maxScore" IS QUOTED, and must stay quoted. Postgres folds unquoted
+  // identifiers to lower case, so `MAX(risk_score) maxScore` returns a column
+  // named `maxscore` -- the query succeeds, the TypeScript still says
+  // maxScore, and every value is undefined. SQLite preserved the case, so this
+  // is a port-only failure and a silent one.
+  return db.query<{ location: string; type: string; c: number; maxScore: number }>(
+    `SELECT location, type, COUNT(*)::int c, MAX(risk_score) AS "maxScore"
+       FROM assets WHERE tenant_id = $1 GROUP BY location, type`,
+    [db.tenantId],
+  );
 }
 
 // -------------------------------------------------------------------- assets
@@ -129,79 +172,94 @@ export interface AssetFilters {
   band?: string;
 }
 
-export function getAssets(filters: AssetFilters = {}): Asset[] {
-  const clauses: string[] = [];
+export async function getAssets(
+  db: TenantDb,
+  filters: AssetFilters = {},
+): Promise<Asset[]> {
   const params: unknown[] = [];
+  // bind() pushes the value AND returns its placeholder, so the number can
+  // never drift from the position. Computing "$" + (params.length + n) by hand
+  // is correct exactly until someone adds a clause, and the failure is a query
+  // that binds the right values to the wrong columns.
+  const bind = (v: unknown): string => {
+    params.push(v);
+    return `$${params.length}`;
+  };
+
+  const clauses: string[] = [`tenant_id = ${bind(db.tenantId)}`];
+
   if (filters.q) {
-    clauses.push("(id LIKE ? OR name LIKE ? OR model LIKE ?)");
+    // ILIKE, NOT LIKE. SQLite's LIKE is case-insensitive for ASCII by default;
+    // Postgres LIKE is case-sensitive. A straight translation would keep
+    // working and quietly stop matching "Pump" for "pump" -- no error, just a
+    // worse search.
     const like = `%${filters.q}%`;
-    params.push(like, like, like);
+    clauses.push(
+      `(id ILIKE ${bind(like)} OR name ILIKE ${bind(like)} OR model ILIKE ${bind(like)})`,
+    );
   }
-  if (filters.type) {
-    clauses.push("type = ?");
-    params.push(filters.type);
-  }
-  if (filters.location) {
-    clauses.push("location = ?");
-    params.push(filters.location);
-  }
-  if (filters.band) {
-    clauses.push("risk_band = ?");
-    params.push(filters.band);
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  return getDb()
-    .prepare(`SELECT * FROM assets ${where} ORDER BY risk_score DESC, id`)
-    .all(...params) as Asset[];
+  if (filters.type) clauses.push(`type = ${bind(filters.type)}`);
+  if (filters.location) clauses.push(`location = ${bind(filters.location)}`);
+  if (filters.band) clauses.push(`risk_band = ${bind(filters.band)}`);
+
+  return db.query<Asset>(
+    `SELECT * FROM assets WHERE ${clauses.join(" AND ")} ORDER BY risk_score DESC, id`,
+    params,
+  );
 }
 
-export function getAsset(id: string): Asset | undefined {
-  return getDb().prepare("SELECT * FROM assets WHERE id = ?").get(id) as
-    | Asset
-    | undefined;
+export async function getAsset(db: TenantDb, id: string): Promise<Asset | undefined> {
+  const rows = await db.query<Asset>(
+    "SELECT * FROM assets WHERE tenant_id = $1 AND id = $2",
+    [db.tenantId, id],
+  );
+  return rows[0];
 }
 
-export function getLocations(): string[] {
-  return (
-    getDb()
-      .prepare("SELECT DISTINCT location FROM assets ORDER BY location")
-      .all() as { location: string }[]
-  ).map((r) => r.location);
+export async function getLocations(db: TenantDb): Promise<string[]> {
+  const rows = await db.query<{ location: string }>(
+    "SELECT DISTINCT location FROM assets WHERE tenant_id = $1 ORDER BY location",
+    [db.tenantId],
+  );
+  return rows.map((r) => r.location);
 }
 
-export function getAssetSensors(assetId: string): SensorType[] {
-  return (
-    getDb()
-      .prepare(
-        "SELECT DISTINCT sensor_type FROM sensor_readings WHERE asset_id = ?",
-      )
-      .all(assetId) as { sensor_type: SensorType }[]
-  ).map((r) => r.sensor_type);
+export async function getAssetSensors(
+  db: TenantDb,
+  assetId: string,
+): Promise<SensorType[]> {
+  const rows = await db.query<{ sensor_type: SensorType }>(
+    "SELECT DISTINCT sensor_type FROM sensor_readings WHERE tenant_id = $1 AND asset_id = $2",
+    [db.tenantId, assetId],
+  );
+  return rows.map((r) => r.sensor_type);
 }
 
-export function getReadings(
+export async function getReadings(
+  db: TenantDb,
   assetId: string,
   sensor: SensorType,
   fromTs: number,
-): { ts: number; value: number }[] {
-  return getDb()
-    .prepare(
-      `SELECT ts, value FROM sensor_readings
-       WHERE asset_id = ? AND sensor_type = ? AND ts >= ?
-       ORDER BY ts`,
-    )
-    .all(assetId, sensor, fromTs) as { ts: number; value: number }[];
+): Promise<{ ts: number; value: number }[]> {
+  // ts is bigint. Without the int8 parser registered in pg.ts these come back
+  // as strings and every chart silently plots nothing useful.
+  return db.query<{ ts: number; value: number }>(
+    `SELECT ts, value FROM sensor_readings
+      WHERE tenant_id = $1 AND asset_id = $2 AND sensor_type = $3 AND ts >= $4
+      ORDER BY ts`,
+    [db.tenantId, assetId, sensor, fromTs],
+  );
 }
 
-export function getAssetAnomalies(
+export async function getAssetAnomalies(
+  db: TenantDb,
   assetId: string,
   fromTs = 0,
-): Anomaly[] {
-  return getDb()
-    .prepare(
-      "SELECT * FROM anomalies WHERE asset_id = ? AND ts >= ? ORDER BY ts DESC",
-    )
-    .all(assetId, fromTs) as Anomaly[];
+): Promise<Anomaly[]> {
+  return db.query<Anomaly>(
+    "SELECT * FROM anomalies WHERE tenant_id = $1 AND asset_id = $2 AND ts >= $3 ORDER BY ts DESC",
+    [db.tenantId, assetId, fromTs],
+  );
 }
 
 // --------------------------------------------------------------- work orders
@@ -211,58 +269,63 @@ export interface WorkOrderWithJoins extends WorkOrder {
   technician_name: string | null;
 }
 
-export function getWorkOrders(status?: string): WorkOrderWithJoins[] {
-  const where = status ? "WHERE w.status = ?" : "";
-  const params = status ? [status] : [];
-  return getDb()
-    .prepare(
-      `SELECT w.*, a.name AS asset_name, t.name AS technician_name
+const WO_SELECT = `SELECT w.*, a.name AS asset_name, t.name AS technician_name
        FROM work_orders w
-       JOIN assets a ON a.id = w.asset_id
-       LEFT JOIN technicians t ON t.id = w.assigned_to
-       ${where}
-       ORDER BY CASE w.status WHEN 'closed' THEN 1 ELSE 0 END,
+       JOIN assets a ON a.id = w.asset_id AND a.tenant_id = w.tenant_id
+       LEFT JOIN technicians t ON t.id = w.assigned_to AND t.tenant_id = w.tenant_id`;
+
+const WO_ORDER = `ORDER BY CASE w.status WHEN 'closed' THEN 1 ELSE 0 END,
                 CASE w.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END,
-                w.created_at DESC`,
-    )
-    .all(...params) as WorkOrderWithJoins[];
+                w.created_at DESC`;
+
+export async function getWorkOrders(
+  db: TenantDb,
+  status?: string,
+): Promise<WorkOrderWithJoins[]> {
+  const params: unknown[] = [db.tenantId];
+  let where = "WHERE w.tenant_id = $1";
+  if (status) {
+    where += " AND w.status = $2";
+    params.push(status);
+  }
+  return db.query<WorkOrderWithJoins>(`${WO_SELECT} ${where} ${WO_ORDER}`, params);
 }
 
-export function getWorkOrder(id: string): WorkOrderWithJoins | undefined {
-  return getDb()
-    .prepare(
-      `SELECT w.*, a.name AS asset_name, t.name AS technician_name
-       FROM work_orders w
-       JOIN assets a ON a.id = w.asset_id
-       LEFT JOIN technicians t ON t.id = w.assigned_to
-       WHERE w.id = ?`,
-    )
-    .get(id) as WorkOrderWithJoins | undefined;
+export async function getWorkOrder(
+  db: TenantDb,
+  id: string,
+): Promise<WorkOrderWithJoins | undefined> {
+  const rows = await db.query<WorkOrderWithJoins>(
+    `${WO_SELECT} WHERE w.tenant_id = $1 AND w.id = $2`,
+    [db.tenantId, id],
+  );
+  return rows[0];
 }
 
 export interface WorkOrderPart extends Part {
   qty: number;
 }
 
-export function getWorkOrderParts(workOrderId: string): WorkOrderPart[] {
-  return getDb()
-    .prepare(
-      `SELECT p.*, wp.qty FROM work_order_parts wp
-       JOIN parts p ON p.id = wp.part_id WHERE wp.work_order_id = ?`,
-    )
-    .all(workOrderId) as WorkOrderPart[];
+export async function getWorkOrderParts(
+  db: TenantDb,
+  workOrderId: string,
+): Promise<WorkOrderPart[]> {
+  return db.query<WorkOrderPart>(
+    `SELECT p.*, wp.qty FROM work_order_parts wp
+       JOIN parts p ON p.id = wp.part_id AND p.tenant_id = wp.tenant_id
+      WHERE wp.tenant_id = $1 AND wp.work_order_id = $2`,
+    [db.tenantId, workOrderId],
+  );
 }
 
-export function getAssetWorkOrders(assetId: string): WorkOrderWithJoins[] {
-  return getDb()
-    .prepare(
-      `SELECT w.*, a.name AS asset_name, t.name AS technician_name
-       FROM work_orders w
-       JOIN assets a ON a.id = w.asset_id
-       LEFT JOIN technicians t ON t.id = w.assigned_to
-       WHERE w.asset_id = ? ORDER BY w.created_at DESC`,
-    )
-    .all(assetId) as WorkOrderWithJoins[];
+export async function getAssetWorkOrders(
+  db: TenantDb,
+  assetId: string,
+): Promise<WorkOrderWithJoins[]> {
+  return db.query<WorkOrderWithJoins>(
+    `${WO_SELECT} WHERE w.tenant_id = $1 AND w.asset_id = $2 ORDER BY w.created_at DESC`,
+    [db.tenantId, assetId],
+  );
 }
 
 export interface NewWorkOrder {
@@ -275,21 +338,32 @@ export interface NewWorkOrder {
   due_at: number | null;
 }
 
-export function createWorkOrder(input: NewWorkOrder): string {
-  const db = getDb();
-  const tx = db.transaction(() => {
-    const seqRow = db
-      .prepare("SELECT value FROM meta WHERE key = 'wo_seq'")
-      .get() as { value: string };
-    const next = Number(seqRow.value) + 1;
-    db.prepare("UPDATE meta SET value = ? WHERE key = 'wo_seq'").run(
-      String(next),
-    );
-    const id = `WO-${next}`;
-    db.prepare(
-      `INSERT INTO work_orders (id, asset_id, title, description, status, priority, type, assigned_to, created_at, due_at, completed_at)
-       VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?, NULL)`,
-    ).run(
+export async function createWorkOrder(
+  db: TenantDb,
+  input: NewWorkOrder,
+): Promise<string> {
+  // FOR UPDATE IS NOT OPTIONAL HERE, and its absence would be a port-only bug.
+  // better-sqlite3 serialises writers, so read-modify-write on meta.wo_seq was
+  // implicitly safe. Postgres runs transactions concurrently: without the row
+  // lock, two simultaneous calls both read 5 and both create WO-6, and the
+  // second INSERT fails on the primary key -- or worse, would not if the id
+  // were not a key. withTenant() already wraps this in one transaction, so the
+  // lock is held until it commits.
+  const seq = await db.query<{ value: string }>(
+    "SELECT value FROM meta WHERE tenant_id = $1 AND key = 'wo_seq' FOR UPDATE",
+    [db.tenantId],
+  );
+  const next = Number(seq[0].value) + 1;
+  await db.query(
+    "UPDATE meta SET value = $1 WHERE tenant_id = $2 AND key = 'wo_seq'",
+    [String(next), db.tenantId],
+  );
+  const id = `WO-${next}`;
+  await db.query(
+    `INSERT INTO work_orders (tenant_id, id, asset_id, title, description, status, priority, type, assigned_to, created_at, due_at, completed_at)
+     VALUES ($1, $2, $3, $4, $5, 'open', $6, $7, $8, $9, $10, NULL)`,
+    [
+      db.tenantId,
       id,
       input.asset_id,
       input.title,
@@ -297,12 +371,11 @@ export function createWorkOrder(input: NewWorkOrder): string {
       input.priority,
       input.type,
       input.assigned_to,
-      Math.floor(Date.now() / 1000),
+      nowSec(),
       input.due_at,
-    );
-    return id;
-  });
-  return tx();
+    ],
+  );
+  return id;
 }
 
 // ------------------------------------------------- work-order mutations
@@ -311,73 +384,92 @@ function nowSec(): number {
   return Math.floor(Date.now() / 1000);
 }
 
-export function assignWorkOrder(id: string, technicianId: string | null): void {
-  getDb()
-    .prepare("UPDATE work_orders SET assigned_to = ? WHERE id = ?")
-    .run(technicianId, id);
+export async function assignWorkOrder(
+  db: TenantDb,
+  id: string,
+  technicianId: string | null,
+): Promise<void> {
+  await db.query(
+    "UPDATE work_orders SET assigned_to = $1 WHERE tenant_id = $2 AND id = $3",
+    [technicianId, db.tenantId, id],
+  );
 }
 
-export function setWorkOrderStatus(id: string, status: WorkOrderStatus): void {
-  const db = getDb();
-  const row = db
-    .prepare("SELECT completed_at FROM work_orders WHERE id = ?")
-    .get(id) as { completed_at: number | null } | undefined;
+export async function setWorkOrderStatus(
+  db: TenantDb,
+  id: string,
+  status: WorkOrderStatus,
+): Promise<void> {
+  const rows = await db.query<{ completed_at: number | null }>(
+    "SELECT completed_at FROM work_orders WHERE tenant_id = $1 AND id = $2",
+    [db.tenantId, id],
+  );
   const completedAt = completionForStatus(
     status,
     nowSec(),
-    row?.completed_at ?? null,
+    rows[0]?.completed_at ?? null,
   );
-  db.prepare(
-    "UPDATE work_orders SET status = ?, completed_at = ? WHERE id = ?",
-  ).run(status, completedAt, id);
+  await db.query(
+    "UPDATE work_orders SET status = $1, completed_at = $2 WHERE tenant_id = $3 AND id = $4",
+    [status, completedAt, db.tenantId, id],
+  );
 }
 
-export function setWorkOrderDueDate(id: string, dueAt: number | null): void {
-  getDb()
-    .prepare("UPDATE work_orders SET due_at = ? WHERE id = ?")
-    .run(dueAt, id);
+export async function setWorkOrderDueDate(
+  db: TenantDb,
+  id: string,
+  dueAt: number | null,
+): Promise<void> {
+  await db.query(
+    "UPDATE work_orders SET due_at = $1 WHERE tenant_id = $2 AND id = $3",
+    [dueAt, db.tenantId, id],
+  );
 }
 
 /**
  * Attach a part to a work order. If the part is already on the order the
  * quantity is replaced (not stacked), so repeated adds are idempotent.
  */
-export function addWorkOrderPart(
+export async function addWorkOrderPart(
+  db: TenantDb,
   workOrderId: string,
   partId: string,
   qty: number,
-): void {
-  const db = getDb();
-  db.transaction(() => {
-    const existing = db
-      .prepare(
-        "SELECT 1 FROM work_order_parts WHERE work_order_id = ? AND part_id = ?",
-      )
-      .get(workOrderId, partId);
-    if (existing) {
-      db.prepare(
-        "UPDATE work_order_parts SET qty = ? WHERE work_order_id = ? AND part_id = ?",
-      ).run(qty, workOrderId, partId);
-    } else {
-      db.prepare(
-        "INSERT INTO work_order_parts (work_order_id, part_id, qty) VALUES (?, ?, ?)",
-      ).run(workOrderId, partId, qty);
-    }
-  })();
+): Promise<void> {
+  const existing = await db.query(
+    "SELECT 1 FROM work_order_parts WHERE tenant_id = $1 AND work_order_id = $2 AND part_id = $3 FOR UPDATE",
+    [db.tenantId, workOrderId, partId],
+  );
+  if (existing.length) {
+    await db.query(
+      "UPDATE work_order_parts SET qty = $1 WHERE tenant_id = $2 AND work_order_id = $3 AND part_id = $4",
+      [qty, db.tenantId, workOrderId, partId],
+    );
+  } else {
+    await db.query(
+      "INSERT INTO work_order_parts (tenant_id, work_order_id, part_id, qty) VALUES ($1, $2, $3, $4)",
+      [db.tenantId, workOrderId, partId, qty],
+    );
+  }
 }
 
-export function removeWorkOrderPart(workOrderId: string, partId: string): void {
-  getDb()
-    .prepare(
-      "DELETE FROM work_order_parts WHERE work_order_id = ? AND part_id = ?",
-    )
-    .run(workOrderId, partId);
+export async function removeWorkOrderPart(
+  db: TenantDb,
+  workOrderId: string,
+  partId: string,
+): Promise<void> {
+  await db.query(
+    "DELETE FROM work_order_parts WHERE tenant_id = $1 AND work_order_id = $2 AND part_id = $3",
+    [db.tenantId, workOrderId, partId],
+  );
 }
 
-export function getPart(id: string): Part | undefined {
-  return getDb().prepare("SELECT * FROM parts WHERE id = ?").get(id) as
-    | Part
-    | undefined;
+export async function getPart(db: TenantDb, id: string): Promise<Part | undefined> {
+  const rows = await db.query<Part>(
+    "SELECT * FROM parts WHERE tenant_id = $1 AND id = $2",
+    [db.tenantId, id],
+  );
+  return rows[0];
 }
 
 // ------------------------------------------------------------------ schedule
@@ -388,54 +480,60 @@ export interface ScheduleEntry extends MaintenanceTask {
   technician_name: string | null;
 }
 
-export function getSchedule(): ScheduleEntry[] {
-  return getDb()
-    .prepare(
-      `SELECT m.*, a.name AS asset_name, a.location AS asset_location,
+const SCHEDULE_SELECT = `SELECT m.*, a.name AS asset_name, a.location AS asset_location,
               t.name AS technician_name
        FROM maintenance_schedule m
-       JOIN assets a ON a.id = m.asset_id
-       LEFT JOIN technicians t ON t.id = m.assigned_to
-       ORDER BY m.next_due`,
-    )
-    .all() as ScheduleEntry[];
+       JOIN assets a ON a.id = m.asset_id AND a.tenant_id = m.tenant_id
+       LEFT JOIN technicians t ON t.id = m.assigned_to AND t.tenant_id = m.tenant_id`;
+
+export async function getSchedule(db: TenantDb): Promise<ScheduleEntry[]> {
+  return db.query<ScheduleEntry>(
+    `${SCHEDULE_SELECT} WHERE m.tenant_id = $1 ORDER BY m.next_due`,
+    [db.tenantId],
+  );
 }
 
-export function getMaintenanceTask(id: string): MaintenanceTask | undefined {
-  return getDb()
-    .prepare("SELECT * FROM maintenance_schedule WHERE id = ?")
-    .get(id) as MaintenanceTask | undefined;
+export async function getMaintenanceTask(
+  db: TenantDb,
+  id: string,
+): Promise<MaintenanceTask | undefined> {
+  const rows = await db.query<MaintenanceTask>(
+    "SELECT * FROM maintenance_schedule WHERE tenant_id = $1 AND id = $2",
+    [db.tenantId, id],
+  );
+  return rows[0];
 }
 
 /** Reschedule a preventive task to a new due date (YYYY-MM-DD). */
-export function rescheduleTask(id: string, nextDue: string): void {
-  getDb()
-    .prepare("UPDATE maintenance_schedule SET next_due = ? WHERE id = ?")
-    .run(nextDue, id);
+export async function rescheduleTask(
+  db: TenantDb,
+  id: string,
+  nextDue: string,
+): Promise<void> {
+  await db.query(
+    "UPDATE maintenance_schedule SET next_due = $1 WHERE tenant_id = $2 AND id = $3",
+    [nextDue, db.tenantId, id],
+  );
 }
 
-export function getAssetSchedule(assetId: string): ScheduleEntry[] {
-  return getDb()
-    .prepare(
-      `SELECT m.*, a.name AS asset_name, a.location AS asset_location,
-              t.name AS technician_name
-       FROM maintenance_schedule m
-       JOIN assets a ON a.id = m.asset_id
-       LEFT JOIN technicians t ON t.id = m.assigned_to
-       WHERE m.asset_id = ? ORDER BY m.next_due`,
-    )
-    .all(assetId) as ScheduleEntry[];
+export async function getAssetSchedule(
+  db: TenantDb,
+  assetId: string,
+): Promise<ScheduleEntry[]> {
+  return db.query<ScheduleEntry>(
+    `${SCHEDULE_SELECT} WHERE m.tenant_id = $1 AND m.asset_id = $2 ORDER BY m.next_due`,
+    [db.tenantId, assetId],
+  );
 }
 
 // --------------------------------------------------------------- parts, team
 
-export function getParts(): Part[] {
-  return getDb()
-    .prepare(
-      `SELECT * FROM parts
-       ORDER BY CASE WHEN qty_on_hand < reorder_point THEN 0 ELSE 1 END, category, name`,
-    )
-    .all() as Part[];
+export async function getParts(db: TenantDb): Promise<Part[]> {
+  return db.query<Part>(
+    `SELECT * FROM parts WHERE tenant_id = $1
+      ORDER BY CASE WHEN qty_on_hand < reorder_point THEN 0 ELSE 1 END, category, name`,
+    [db.tenantId],
+  );
 }
 
 export interface TechnicianWithLoad extends Technician {
@@ -449,22 +547,26 @@ export interface TechnicianWithLoad extends Technician {
  * caller (deep-verify PR #24 blocker B1 -- arbitrary text in
  * `assigned_to` was reaching a fresh visitor's page source).
  */
-export function getTechnician(id: string): Technician | undefined {
-  return getDb().prepare("SELECT * FROM technicians WHERE id = ?").get(id) as
-    | Technician
-    | undefined;
+export async function getTechnician(
+  db: TenantDb,
+  id: string,
+): Promise<Technician | undefined> {
+  const rows = await db.query<Technician>(
+    "SELECT * FROM technicians WHERE tenant_id = $1 AND id = $2",
+    [db.tenantId, id],
+  );
+  return rows[0];
 }
 
-export function getTechnicians(): TechnicianWithLoad[] {
-  return getDb()
-    .prepare(
-      `SELECT t.*, (
-         SELECT COUNT(*) FROM work_orders w
-         WHERE w.assigned_to = t.id AND w.status != 'closed'
+export async function getTechnicians(db: TenantDb): Promise<TechnicianWithLoad[]> {
+  return db.query<TechnicianWithLoad>(
+    `SELECT t.*, (
+         SELECT COUNT(*)::int FROM work_orders w
+          WHERE w.tenant_id = t.tenant_id AND w.assigned_to = t.id AND w.status <> 'closed'
        ) AS open_orders
-       FROM technicians t ORDER BY t.name`,
-    )
-    .all() as TechnicianWithLoad[];
+       FROM technicians t WHERE t.tenant_id = $1 ORDER BY t.name`,
+    [db.tenantId],
+  );
 }
 
 // ----------------------------------------------------- purchase orders
@@ -474,27 +576,40 @@ export interface PurchaseOrderSummary extends PurchaseOrder {
   total: number;
 }
 
-export function getPurchaseOrders(): PurchaseOrderSummary[] {
-  return getDb()
-    .prepare(
-      `SELECT po.*,
-              COUNT(l.part_id) AS line_count,
-              COALESCE(SUM(l.qty * l.unit_cost), 0) AS total
+export async function getPurchaseOrders(
+  db: TenantDb,
+): Promise<PurchaseOrderSummary[]> {
+  // GROUP BY po.tenant_id, po.id -- NOT po.id alone. Postgres permits SELECT
+  // po.* alongside a GROUP BY only when the grouped columns are the table's
+  // PRIMARY KEY (functional dependency). D-022 made the key composite, so
+  // grouping by id alone now fails outright with "column po.supplier must
+  // appear in the GROUP BY clause". A tenancy decision reached in the schema
+  // changed what is legal in a query three files away.
+  return db.query<PurchaseOrderSummary>(
+    `SELECT po.*,
+            COUNT(l.part_id)::int AS line_count,
+            COALESCE(SUM(l.qty * l.unit_cost), 0) AS total
        FROM purchase_orders po
-       LEFT JOIN purchase_order_lines l ON l.po_id = po.id
-       GROUP BY po.id
-       ORDER BY CASE po.status
-                  WHEN 'draft' THEN 0 WHEN 'ordered' THEN 1
-                  WHEN 'received' THEN 2 ELSE 3 END,
-                po.created_at DESC`,
-    )
-    .all() as PurchaseOrderSummary[];
+       LEFT JOIN purchase_order_lines l ON l.po_id = po.id AND l.tenant_id = po.tenant_id
+      WHERE po.tenant_id = $1
+      GROUP BY po.tenant_id, po.id
+      ORDER BY CASE po.status
+                 WHEN 'draft' THEN 0 WHEN 'ordered' THEN 1
+                 WHEN 'received' THEN 2 ELSE 3 END,
+               po.created_at DESC`,
+    [db.tenantId],
+  );
 }
 
-export function getPurchaseOrder(id: string): PurchaseOrder | undefined {
-  return getDb()
-    .prepare("SELECT * FROM purchase_orders WHERE id = ?")
-    .get(id) as PurchaseOrder | undefined;
+export async function getPurchaseOrder(
+  db: TenantDb,
+  id: string,
+): Promise<PurchaseOrder | undefined> {
+  const rows = await db.query<PurchaseOrder>(
+    "SELECT * FROM purchase_orders WHERE tenant_id = $1 AND id = $2",
+    [db.tenantId, id],
+  );
+  return rows[0];
 }
 
 export interface PurchaseOrderLineWithPart extends PurchaseOrderLine {
@@ -504,22 +619,25 @@ export interface PurchaseOrderLineWithPart extends PurchaseOrderLine {
   lead_time_days: number;
 }
 
-export function getPurchaseOrderLines(poId: string): PurchaseOrderLineWithPart[] {
-  return getDb()
-    .prepare(
-      `SELECT l.*, p.name, p.sku, p.category, p.lead_time_days
-       FROM purchase_order_lines l JOIN parts p ON p.id = l.part_id
-       WHERE l.po_id = ? ORDER BY p.category, p.name`,
-    )
-    .all(poId) as PurchaseOrderLineWithPart[];
+export async function getPurchaseOrderLines(
+  db: TenantDb,
+  poId: string,
+): Promise<PurchaseOrderLineWithPart[]> {
+  return db.query<PurchaseOrderLineWithPart>(
+    `SELECT l.*, p.name, p.sku, p.category, p.lead_time_days
+       FROM purchase_order_lines l
+       JOIN parts p ON p.id = l.part_id AND p.tenant_id = l.tenant_id
+      WHERE l.tenant_id = $1 AND l.po_id = $2
+      ORDER BY p.category, p.name`,
+    [db.tenantId, poId],
+  );
 }
 
-export function getBelowReorderParts(): Part[] {
-  return getDb()
-    .prepare(
-      "SELECT * FROM parts WHERE qty_on_hand < reorder_point ORDER BY supplier, name",
-    )
-    .all() as Part[];
+export async function getBelowReorderParts(db: TenantDb): Promise<Part[]> {
+  return db.query<Part>(
+    "SELECT * FROM parts WHERE tenant_id = $1 AND qty_on_hand < reorder_point ORDER BY supplier, name",
+    [db.tenantId],
+  );
 }
 
 export interface ReorderResult {
@@ -533,59 +651,65 @@ export interface ReorderResult {
  * every below-reorder part. Parts are grouped by supplier into one draft PO
  * each, with recommended quantities. Returns what was created.
  */
-export function createReorderPurchaseOrders(partIds?: string[]): ReorderResult {
-  const db = getDb();
-  return db.transaction(() => {
-    let parts: Part[];
-    if (partIds && partIds.length) {
-      const placeholders = partIds.map(() => "?").join(",");
-      parts = db
-        .prepare(`SELECT * FROM parts WHERE id IN (${placeholders})`)
-        .all(...partIds) as Part[];
-    } else {
-      parts = db
-        .prepare("SELECT * FROM parts WHERE qty_on_hand < reorder_point")
-        .all() as Part[];
-    }
-    if (!parts.length) return { created: 0, poIds: [], partCount: 0 };
-
-    const bySupplier = new Map<string, Part[]>();
-    for (const p of parts) {
-      const list = bySupplier.get(p.supplier) ?? [];
-      list.push(p);
-      bySupplier.set(p.supplier, list);
-    }
-
-    const seqRow = db
-      .prepare("SELECT value FROM meta WHERE key = 'po_seq'")
-      .get() as { value: string };
-    let seq = Number(seqRow.value);
-    const now = nowSec();
-    const poIds: string[] = [];
-
-    const insertPo = db.prepare(
-      `INSERT INTO purchase_orders (id, supplier, status, created_at, ordered_at, expected_at, received_at, notes)
-       VALUES (?, ?, 'draft', ?, NULL, NULL, NULL, ?)`,
+export async function createReorderPurchaseOrders(
+  db: TenantDb,
+  partIds?: string[],
+): Promise<ReorderResult> {
+  let parts: Part[];
+  if (partIds && partIds.length) {
+    // = ANY($2) rather than an IN list built from placeholders: one bind
+    // parameter instead of N, so the statement text does not change with the
+    // input and there is no placeholder arithmetic to get wrong.
+    parts = await db.query<Part>(
+      "SELECT * FROM parts WHERE tenant_id = $1 AND id = ANY($2)",
+      [db.tenantId, partIds],
     );
-    const insertLine = db.prepare(
-      "INSERT INTO purchase_order_lines (po_id, part_id, qty, unit_cost) VALUES (?, ?, ?, ?)",
+  } else {
+    parts = await db.query<Part>(
+      "SELECT * FROM parts WHERE tenant_id = $1 AND qty_on_hand < reorder_point",
+      [db.tenantId],
     );
+  }
+  if (!parts.length) return { created: 0, poIds: [], partCount: 0 };
 
-    for (const [supplier, supplierParts] of bySupplier) {
-      seq += 1;
-      const id = `PO-${seq}`;
-      insertPo.run(id, supplier, now, "Auto-drafted from a reorder alert.");
-      for (const p of supplierParts) {
-        insertLine.run(id, p.id, recommendedReorderQty(p), p.unit_cost);
-      }
-      poIds.push(id);
+  const bySupplier = new Map<string, Part[]>();
+  for (const p of parts) {
+    const list = bySupplier.get(p.supplier) ?? [];
+    list.push(p);
+    bySupplier.set(p.supplier, list);
+  }
+
+  // FOR UPDATE, for the same reason as createWorkOrder.
+  const seqRow = await db.query<{ value: string }>(
+    "SELECT value FROM meta WHERE tenant_id = $1 AND key = 'po_seq' FOR UPDATE",
+    [db.tenantId],
+  );
+  let seq = Number(seqRow[0].value);
+  const now = nowSec();
+  const poIds: string[] = [];
+
+  for (const [supplier, supplierParts] of bySupplier) {
+    seq += 1;
+    const id = `PO-${seq}`;
+    await db.query(
+      `INSERT INTO purchase_orders (tenant_id, id, supplier, status, created_at, ordered_at, expected_at, received_at, notes)
+       VALUES ($1, $2, $3, 'draft', $4, NULL, NULL, NULL, $5)`,
+      [db.tenantId, id, supplier, now, "Auto-drafted from a reorder alert."],
+    );
+    for (const p of supplierParts) {
+      await db.query(
+        "INSERT INTO purchase_order_lines (tenant_id, po_id, part_id, qty, unit_cost) VALUES ($1, $2, $3, $4, $5)",
+        [db.tenantId, id, p.id, recommendedReorderQty(p), p.unit_cost],
+      );
     }
+    poIds.push(id);
+  }
 
-    db.prepare("UPDATE meta SET value = ? WHERE key = 'po_seq'").run(
-      String(seq),
-    );
-    return { created: poIds.length, poIds, partCount: parts.length };
-  })();
+  await db.query(
+    "UPDATE meta SET value = $1 WHERE tenant_id = $2 AND key = 'po_seq'",
+    [String(seq), db.tenantId],
+  );
+  return { created: poIds.length, poIds, partCount: parts.length };
 }
 
 /**
@@ -595,44 +719,47 @@ export function createReorderPurchaseOrders(partIds?: string[]): ReorderResult {
  * place stock is incremented, the counterpart to attaching parts to work
  * orders (which deliberately does not touch stock).
  */
-export function setPurchaseOrderStatus(
+export async function setPurchaseOrderStatus(
+  db: TenantDb,
   id: string,
   status: PurchaseOrderStatus,
-): void {
-  const db = getDb();
-  db.transaction(() => {
-    const now = nowSec();
-    if (status === "ordered") {
-      const lead = db
-        .prepare(
-          `SELECT COALESCE(MAX(p.lead_time_days), 7) AS d
-           FROM purchase_order_lines l JOIN parts p ON p.id = l.part_id
-           WHERE l.po_id = ?`,
-        )
-        .get(id) as { d: number };
-      db.prepare(
-        "UPDATE purchase_orders SET status = 'ordered', ordered_at = ?, expected_at = ? WHERE id = ?",
-      ).run(now, now + lead.d * DAY, id);
-    } else if (status === "received") {
-      const lines = db
-        .prepare(
-          "SELECT part_id, qty FROM purchase_order_lines WHERE po_id = ?",
-        )
-        .all(id) as { part_id: string; qty: number }[];
-      const restock = db.prepare(
-        "UPDATE parts SET qty_on_hand = qty_on_hand + ? WHERE id = ?",
-      );
-      for (const line of lines) restock.run(line.qty, line.part_id);
-      db.prepare(
-        "UPDATE purchase_orders SET status = 'received', received_at = ? WHERE id = ?",
-      ).run(now, id);
-    } else {
-      db.prepare("UPDATE purchase_orders SET status = ? WHERE id = ?").run(
-        status,
-        id,
+): Promise<void> {
+  const t = db.tenantId;
+  const now = nowSec();
+
+  if (status === "ordered") {
+    const lead = await db.query<{ d: number }>(
+      `SELECT COALESCE(MAX(p.lead_time_days), 7)::int AS d
+         FROM purchase_order_lines l
+         JOIN parts p ON p.id = l.part_id AND p.tenant_id = l.tenant_id
+        WHERE l.tenant_id = $1 AND l.po_id = $2`,
+      [t, id],
+    );
+    await db.query(
+      "UPDATE purchase_orders SET status = 'ordered', ordered_at = $1, expected_at = $2 WHERE tenant_id = $3 AND id = $4",
+      [now, now + lead[0].d * DAY, t, id],
+    );
+  } else if (status === "received") {
+    const lines = await db.query<{ part_id: string; qty: number }>(
+      "SELECT part_id, qty FROM purchase_order_lines WHERE tenant_id = $1 AND po_id = $2",
+      [t, id],
+    );
+    for (const line of lines) {
+      await db.query(
+        "UPDATE parts SET qty_on_hand = qty_on_hand + $1 WHERE tenant_id = $2 AND id = $3",
+        [line.qty, t, line.part_id],
       );
     }
-  })();
+    await db.query(
+      "UPDATE purchase_orders SET status = 'received', received_at = $1 WHERE tenant_id = $2 AND id = $3",
+      [now, t, id],
+    );
+  } else {
+    await db.query(
+      "UPDATE purchase_orders SET status = $1 WHERE tenant_id = $2 AND id = $3",
+      [status, t, id],
+    );
+  }
 }
 
 // ----------------------------------------------- part <-> work-order links
@@ -641,56 +768,64 @@ export interface WorkOrderConsumingPart extends WorkOrderWithJoins {
   line_qty: number;
 }
 
-export function getPartConsumingWorkOrders(
+export async function getPartConsumingWorkOrders(
+  db: TenantDb,
   partId: string,
-): WorkOrderConsumingPart[] {
-  return getDb()
-    .prepare(
-      `SELECT w.*, a.name AS asset_name, t.name AS technician_name, wp.qty AS line_qty
+): Promise<WorkOrderConsumingPart[]> {
+  return db.query<WorkOrderConsumingPart>(
+    `SELECT w.*, a.name AS asset_name, t.name AS technician_name, wp.qty AS line_qty
        FROM work_order_parts wp
-       JOIN work_orders w ON w.id = wp.work_order_id
-       JOIN assets a ON a.id = w.asset_id
-       LEFT JOIN technicians t ON t.id = w.assigned_to
-       WHERE wp.part_id = ?
-       ORDER BY CASE w.status WHEN 'closed' THEN 1 ELSE 0 END, w.created_at DESC`,
-    )
-    .all(partId) as WorkOrderConsumingPart[];
+       JOIN work_orders w ON w.id = wp.work_order_id AND w.tenant_id = wp.tenant_id
+       JOIN assets a ON a.id = w.asset_id AND a.tenant_id = w.tenant_id
+       LEFT JOIN technicians t ON t.id = w.assigned_to AND t.tenant_id = w.tenant_id
+      WHERE wp.tenant_id = $1 AND wp.part_id = $2
+      ORDER BY CASE w.status WHEN 'closed' THEN 1 ELSE 0 END, w.created_at DESC`,
+    [db.tenantId, partId],
+  );
 }
 
-export function getPartPurchaseOrders(partId: string): PurchaseOrderSummary[] {
-  return getDb()
-    .prepare(
-      `SELECT po.*, COUNT(l2.part_id) AS line_count,
-              COALESCE(SUM(l2.qty * l2.unit_cost), 0) AS total
+export async function getPartPurchaseOrders(
+  db: TenantDb,
+  partId: string,
+): Promise<PurchaseOrderSummary[]> {
+  return db.query<PurchaseOrderSummary>(
+    `SELECT po.*, COUNT(l2.part_id)::int AS line_count,
+            COALESCE(SUM(l2.qty * l2.unit_cost), 0) AS total
        FROM purchase_orders po
-       JOIN purchase_order_lines l ON l.po_id = po.id AND l.part_id = ?
-       LEFT JOIN purchase_order_lines l2 ON l2.po_id = po.id
-       GROUP BY po.id
-       ORDER BY po.created_at DESC`,
-    )
-    .all(partId) as PurchaseOrderSummary[];
+       JOIN purchase_order_lines l
+         ON l.po_id = po.id AND l.tenant_id = po.tenant_id AND l.part_id = $2
+       LEFT JOIN purchase_order_lines l2 ON l2.po_id = po.id AND l2.tenant_id = po.tenant_id
+      WHERE po.tenant_id = $1
+      GROUP BY po.tenant_id, po.id
+      ORDER BY po.created_at DESC`,
+    [db.tenantId, partId],
+  );
 }
 
 // ------------------------------------------------------------------- reports
 
-export function getWoMonthlyThroughput(): {
-  month: string;
-  opened: number;
-  closed: number;
-}[] {
-  const db = getDb();
-  const opened = db
-    .prepare(
-      `SELECT strftime('%Y-%m', created_at, 'unixepoch') month, COUNT(*) c
-       FROM work_orders GROUP BY month`,
-    )
-    .all() as { month: string; c: number }[];
-  const closed = db
-    .prepare(
-      `SELECT strftime('%Y-%m', completed_at, 'unixepoch') month, COUNT(*) c
-       FROM work_orders WHERE completed_at IS NOT NULL GROUP BY month`,
-    )
-    .all() as { month: string; c: number }[];
+export async function getWoMonthlyThroughput(db: TenantDb): Promise<
+  {
+    month: string;
+    opened: number;
+    closed: number;
+  }[]
+> {
+  // strftime('%Y-%m', created_at, 'unixepoch') has no Postgres equivalent.
+  // to_timestamp() takes epoch seconds and to_char() formats it. The column is
+  // bigint, which to_timestamp accepts directly.
+  const opened = await db.query<{ month: string; c: number }>(
+    `SELECT to_char(to_timestamp(created_at), 'YYYY-MM') AS month, COUNT(*)::int c
+       FROM work_orders WHERE tenant_id = $1
+      GROUP BY 1`,
+    [db.tenantId],
+  );
+  const closed = await db.query<{ month: string; c: number }>(
+    `SELECT to_char(to_timestamp(completed_at), 'YYYY-MM') AS month, COUNT(*)::int c
+       FROM work_orders WHERE tenant_id = $1 AND completed_at IS NOT NULL
+      GROUP BY 1`,
+    [db.tenantId],
+  );
   const months = [...new Set([...opened, ...closed].map((r) => r.month))]
     .filter(Boolean)
     .sort();
@@ -701,55 +836,81 @@ export function getWoMonthlyThroughput(): {
   }));
 }
 
-export function getAnomaliesBySensor(): { sensor_type: string; c: number }[] {
-  return getDb()
-    .prepare(
-      "SELECT sensor_type, COUNT(*) c FROM anomalies GROUP BY sensor_type ORDER BY c DESC",
-    )
-    .all() as { sensor_type: string; c: number }[];
+export async function getAnomaliesBySensor(
+  db: TenantDb,
+): Promise<{ sensor_type: string; c: number }[]> {
+  return db.query<{ sensor_type: string; c: number }>(
+    `SELECT sensor_type, COUNT(*)::int c FROM anomalies WHERE tenant_id = $1
+      GROUP BY sensor_type ORDER BY c DESC`,
+    [db.tenantId],
+  );
 }
 
-export function getAnomaliesByDay(days = 30): { day: string; c: number }[] {
-  const now = getGeneratedAt();
-  return getDb()
-    .prepare(
-      `SELECT strftime('%m-%d', ts, 'unixepoch') day, COUNT(*) c
-       FROM anomalies WHERE ts >= ? GROUP BY strftime('%Y-%m-%d', ts, 'unixepoch') ORDER BY ts`,
-    )
-    .all(now - days * DAY) as { day: string; c: number }[];
+export async function getAnomaliesByDay(
+  db: TenantDb,
+  days = 30,
+): Promise<{ day: string; c: number }[]> {
+  const now = await getGeneratedAt(db);
+  // The SQLite version grouped by one expression and ORDERED BY the ungrouped
+  // `ts` column, which SQLite tolerates and Postgres rejects. Grouping by the
+  // full date and ordering by that same value keeps the intended chronological
+  // order without referencing an ungrouped column.
+  return db.query<{ day: string; c: number }>(
+    `SELECT to_char(to_timestamp(ts), 'MM-DD') AS day,
+            COUNT(*)::int c
+       FROM anomalies
+      WHERE tenant_id = $1 AND ts >= $2
+      GROUP BY to_char(to_timestamp(ts), 'YYYY-MM-DD'), to_char(to_timestamp(ts), 'MM-DD')
+      ORDER BY to_char(to_timestamp(ts), 'YYYY-MM-DD')`,
+    [db.tenantId, now - days * DAY],
+  );
 }
 
-export function getRiskByLocation(): {
-  location: string;
-  avgScore: number;
-  assets: number;
-}[] {
-  return getDb()
-    .prepare(
-      `SELECT location, ROUND(AVG(risk_score), 1) avgScore, COUNT(*) assets
-       FROM assets GROUP BY location ORDER BY avgScore DESC`,
-    )
-    .all() as { location: string; avgScore: number; assets: number }[];
+export async function getRiskByLocation(db: TenantDb): Promise<
+  {
+    location: string;
+    avgScore: number;
+    assets: number;
+  }[]
+> {
+  // ROUND(double precision, int) DOES NOT EXIST in Postgres -- only
+  // ROUND(numeric, int). AVG(risk_score) over a double column is double, so
+  // the direct translation is a hard error, not a silent one. ::numeric first,
+  // then ::float8 back so the value arrives as a JS number rather than the
+  // string node-postgres returns for numeric.
+  // "avgScore" is quoted for the same reason as "maxScore" above.
+  return db.query<{ location: string; avgScore: number; assets: number }>(
+    `SELECT location,
+            ROUND(AVG(risk_score)::numeric, 1)::float8 AS "avgScore",
+            COUNT(*)::int AS assets
+       FROM assets WHERE tenant_id = $1
+      GROUP BY location ORDER BY "avgScore" DESC`,
+    [db.tenantId],
+  );
 }
 
-export function getPartsSpendByCategory(): { category: string; spend: number }[] {
-  return getDb()
-    .prepare(
-      `SELECT p.category, ROUND(SUM(p.unit_cost * wp.qty)) spend
-       FROM work_order_parts wp JOIN parts p ON p.id = wp.part_id
-       GROUP BY p.category ORDER BY spend DESC`,
-    )
-    .all() as { category: string; spend: number }[];
+export async function getPartsSpendByCategory(
+  db: TenantDb,
+): Promise<{ category: string; spend: number }[]> {
+  return db.query<{ category: string; spend: number }>(
+    `SELECT p.category, ROUND(SUM(p.unit_cost * wp.qty)::numeric)::float8 AS spend
+       FROM work_order_parts wp
+       JOIN parts p ON p.id = wp.part_id AND p.tenant_id = wp.tenant_id
+      WHERE wp.tenant_id = $1
+      GROUP BY p.category ORDER BY spend DESC`,
+    [db.tenantId],
+  );
 }
 
-export function getWoByTypeAndStatus(): {
-  type: string;
-  status: string;
-  c: number;
-}[] {
-  return getDb()
-    .prepare(
-      "SELECT type, status, COUNT(*) c FROM work_orders GROUP BY type, status",
-    )
-    .all() as { type: string; status: string; c: number }[];
+export async function getWoByTypeAndStatus(db: TenantDb): Promise<
+  {
+    type: string;
+    status: string;
+    c: number;
+  }[]
+> {
+  return db.query<{ type: string; status: string; c: number }>(
+    "SELECT type, status, COUNT(*)::int c FROM work_orders WHERE tenant_id = $1 GROUP BY type, status",
+    [db.tenantId],
+  );
 }

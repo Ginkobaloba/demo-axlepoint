@@ -1,4 +1,19 @@
+import pgTypes from "pg-types";
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
+
+// int8 (OID 20) ARRIVES AS A STRING UNLESS TOLD OTHERWISE. node-postgres does
+// that deliberately, because a 64-bit integer can exceed Number.MAX_SAFE_INTEGER
+// and silently lose precision. For AxlePoint it is the wrong default and the
+// failure is invisible: COUNT(*) is int8, and every timestamp column in
+// db/schema.sql is bigint, so `{ ts: number }` would hold "1758758400" at
+// runtime while TypeScript insisted it was a number. Charts would plot
+// nothing, arithmetic would coerce silently, and === comparisons would fail.
+//
+// Epoch seconds (~1.7e9) and row counts are nowhere near 2^53, so parsing them
+// as numbers is safe here. Queries that feed arithmetic ALSO cast ::int in SQL,
+// so they do not depend on this global setting -- see queries.ts. This is
+// belt and braces for the columns that are genuinely bigint.
+pgTypes.setTypeParser(pgTypes.builtins.INT8, (v: string) => Number(v));
 
 /**
  * Tenant-scoped Postgres access for AxlePoint.

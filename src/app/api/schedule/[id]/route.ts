@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getMaintenanceTask, rescheduleTask } from "@/lib/queries";
 import { isValidIsoDate } from "@/lib/schedule-view";
+import { withCurrentTenant } from "@/lib/tenant";
 
 /**
  * Reschedule a preventive maintenance task. Body: { next_due: "YYYY-MM-DD" }.
@@ -8,7 +9,7 @@ import { isValidIsoDate } from "@/lib/schedule-view";
  */
 export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const task = getMaintenanceTask(params.id);
+  const task = await withCurrentTenant((db) => getMaintenanceTask(db, params.id));
   if (!task) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
@@ -28,6 +29,12 @@ export async function PATCH(request: NextRequest, props: { params: Promise<{ id:
     );
   }
 
-  rescheduleTask(task.id, nextDue);
+  // A SECOND transaction, deliberately. The read above could have been kept
+  // open to make this atomic, but that would hold it across `request.json()`
+  // and the validation below -- unbounded time under caller control. The
+  // existing read-then-write race is unchanged from the SQLite version and
+  // is harmless here: rescheduling a task that vanished in between is a
+  // no-op UPDATE.
+  await withCurrentTenant((db) => rescheduleTask(db, task.id, nextDue));
   return NextResponse.json({ id: task.id, next_due: nextDue, ok: true });
 }

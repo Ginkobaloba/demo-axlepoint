@@ -3,6 +3,7 @@ import { CheckCircle2 } from "lucide-react";
 import { PoStatusChip } from "@/components/badges";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { getPurchaseOrders } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -14,7 +15,7 @@ export default async function PurchaseOrdersPage(
   }
 ) {
   const searchParams = await props.searchParams;
-  const pos = getPurchaseOrders();
+  const pos = await withCurrentTenant((db) => getPurchaseOrders(db));
   const draft = pos.filter((p) => p.status === "draft");
   const ordered = pos.filter((p) => p.status === "ordered");
   const openValue = [...draft, ...ordered].reduce((s, p) => s + p.total, 0);

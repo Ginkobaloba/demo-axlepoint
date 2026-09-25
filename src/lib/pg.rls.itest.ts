@@ -38,6 +38,7 @@ const A = "tenant-aaa";
 const B = "tenant-bbb";
 
 let admin: Pool;
+let adminUrlForRestore: string;
 
 function requireScratchDatabase(): string {
   const url = process.env.DATABASE_URL;
@@ -72,6 +73,7 @@ function appUrlFrom(adminUrl: string): string {
 
 beforeAll(async () => {
   const adminUrl = requireScratchDatabase();
+  adminUrlForRestore = adminUrl;
   admin = new Pool({ connectionString: adminUrl });
 
   const sql = fs.readFileSync(path.join(process.cwd(), "db", "schema.sql"), "utf8");
@@ -106,6 +108,9 @@ beforeAll(async () => {
 afterAll(async () => {
   await closePool();
   if (admin) await admin.end();
+  // See the matching note in route.itest.ts: this file also rewrites the
+  // shared DATABASE_URL, so it puts the admin URL back.
+  if (adminUrlForRestore) process.env.DATABASE_URL = adminUrlForRestore;
 });
 
 /**

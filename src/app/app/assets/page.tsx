@@ -2,6 +2,7 @@ import Link from "next/link";
 import { AssetStatusChip, RiskBar, RiskChip } from "@/components/badges";
 import { fmtNumber } from "@/lib/format";
 import { getAssets, getLocations } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 import { RISK_BAND_LABELS } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -51,8 +52,10 @@ export default async function AssetsPage(
   }
 ) {
   const searchParams = await props.searchParams;
-  const assets = getAssets(searchParams);
-  const locations = getLocations();
+  const { assets, locations } = await withCurrentTenant(async (db) => ({
+    assets: await getAssets(db, searchParams),
+    locations: await getLocations(db),
+  }));
   const hasFilters = Boolean(
     searchParams.q || searchParams.type || searchParams.location || searchParams.band,
   );

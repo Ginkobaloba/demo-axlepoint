@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getPurchaseOrder, setPurchaseOrderStatus } from "@/lib/queries";
 import { parsePoStatusPatch } from "@/lib/po-actions";
+import { withCurrentTenant } from "@/lib/tenant";
 
 /**
  * Move a purchase order along its lifecycle (draft -> ordered -> received,
@@ -8,7 +9,7 @@ import { parsePoStatusPatch } from "@/lib/po-actions";
  */
 export async function PATCH(request: NextRequest, props: { params: Promise<{ id: string }> }) {
   const params = await props.params;
-  const po = getPurchaseOrder(params.id);
+  const po = await withCurrentTenant((db) => getPurchaseOrder(db, params.id));
   if (!po) {
     return NextResponse.json({ error: "not found" }, { status: 404 });
   }
@@ -25,6 +26,10 @@ export async function PATCH(request: NextRequest, props: { params: Promise<{ id:
     return NextResponse.json({ error: parsed.error }, { status: 422 });
   }
 
-  setPurchaseOrderStatus(po.id, parsed.status);
+  // A separate transaction from the read above: the read must not stay open
+  // across `request.json()`, whose duration the caller controls.
+  await withCurrentTenant((db) =>
+    setPurchaseOrderStatus(db, po.id, parsed.status),
+  );
   return NextResponse.json({ id: po.id, status: parsed.status, ok: true });
 }

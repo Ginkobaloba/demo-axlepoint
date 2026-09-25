@@ -1,14 +1,20 @@
 import { addDays } from "date-fns";
 import { ScheduleBoard } from "@/components/schedule-board";
 import { getGeneratedAt, getSchedule } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
 export const metadata = { title: "Schedule" };
 
-export default function SchedulePage() {
-  const entries = getSchedule();
-  const todayMs = getGeneratedAt() * 1000;
+export default async function SchedulePage() {
+  // One transaction for both reads, so the board and its "today" marker
+  // come from the same snapshot.
+  const { entries, generatedAt } = await withCurrentTenant(async (db) => ({
+    entries: await getSchedule(db),
+    generatedAt: await getGeneratedAt(db),
+  }));
+  const todayMs = generatedAt * 1000;
   const today = new Date(todayMs);
   today.setHours(0, 0, 0, 0);
   const horizon = addDays(today, 30);

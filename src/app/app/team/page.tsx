@@ -2,6 +2,7 @@ import Link from "next/link";
 import { MapPin } from "lucide-react";
 import { fmtIsoDate } from "@/lib/format";
 import { getTechnicians } from "@/lib/queries";
+import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +16,8 @@ function initials(name: string): string {
     .join("");
 }
 
-export default function TeamPage() {
-  const technicians = getTechnicians();
+export default async function TeamPage() {
+  const technicians = await withCurrentTenant((db) => getTechnicians(db));
 
   return (
     <div className="space-y-4">
