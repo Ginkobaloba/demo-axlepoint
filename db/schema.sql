@@ -404,3 +404,45 @@ BEGIN
   END LOOP;
 END
 $$;
+
+-- ===========================================================================
+-- THE RESET LOG, and why it is not in `public`.
+--
+-- The obvious home for "when did the reset last run" is a meta row. That would
+-- not survive: meta is a public table, so every reset restores it from
+-- pristine and erases the timestamp the reset just wrote. The audit trail
+-- would be deleted by the thing it audits.
+--
+-- `ops` is not walked by the reset (which selects schemaname = 'public'), so
+-- rows here persist across resets. It carries no tenant_id and no RLS: it is
+-- operational telemetry about the demo tenant, not customer data.
+--
+-- FAILURES ARE LOGGED TOO. Without a failure row, "no recent success" cannot
+-- distinguish "never ran" from "ran and failed", and those need different
+-- responses. The log write happens in its OWN transaction, outside the
+-- reset's, or it would roll back together with the failure it exists to
+-- record.
+-- ===========================================================================
+
+CREATE SCHEMA ops;
+
+CREATE TABLE ops.reset_log (
+  id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  tenant_id     text NOT NULL,
+  started_at    timestamptz NOT NULL,
+  finished_at   timestamptz NOT NULL DEFAULT now(),
+  ok            boolean NOT NULL,
+  rows_restored integer NOT NULL DEFAULT 0,
+  error         text
+);
+CREATE INDEX idx_reset_log_recent ON ops.reset_log (tenant_id, finished_at DESC);
+
+GRANT USAGE ON SCHEMA ops TO demo_reset;
+GRANT SELECT, INSERT ON ops.reset_log TO demo_reset;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ops TO demo_reset;
+
+-- The app reads freshness (so a health endpoint can report it) but must never
+-- write it: a process that can forge a reset record can hide a reset that
+-- never happened.
+GRANT USAGE ON SCHEMA ops TO axlepoint_app;
+GRANT SELECT ON ops.reset_log TO axlepoint_app;

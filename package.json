@@ -15,7 +15,8 @@
     "test:watch": "vitest",
     "ledger:check": "node scripts/ledger.mjs check",
     "test:rls": "vitest run --config vitest.rls.config.ts",
-    "db:reset": "tsx scripts/reset-demo.ts"
+    "db:reset": "tsx scripts/reset-demo.ts",
+    "check:reset": "tsx scripts/check-reset-freshness.ts"
   },
   "dependencies": {
     "@paradigm-codes/auth": "^0.1.0",

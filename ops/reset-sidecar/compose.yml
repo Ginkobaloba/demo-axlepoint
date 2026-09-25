@@ -1,0 +1,54 @@
+# The demo reset schedule, as code.
+#
+# THIS IS A FRAGMENT, NOT A STACK. It is merged into the edge compose project
+# at deploy time. It deliberately does NOT live in cloudflare-config/edge:
+# recreating an edge container is a production change, and adding a service to
+# that stack is the deployer's call, made with the usual care, not something
+# this repo does to it from a distance.
+#
+#   docker compose -f edge/docker-compose.yml \
+#                  -f edge/docker-compose.prod.yml \
+#                  -f <this file> up -d --no-deps axlepoint-reset
+#
+# WHY A SIDECAR RATHER THAN A WINDOWS SCHEDULED TASK. A scheduled task lives on
+# one machine and is invisible to the repository: it cannot be reviewed, it is
+# not deployed with the thing it resets, and it is silently orphaned the day
+# the demo moves to Workers. This travels with the stack, is versioned, and its
+# absence is visible in a compose file rather than only in Task Scheduler.
+#
+# WHAT IT IS NOT. A `while true; sleep` loop is not a real scheduler: it drifts,
+# and a restart resets the phase. That is acceptable for a 6-hour retention
+# window and it is NOT the guarantee. The guarantee is `npm run check:reset`,
+# which reads ops.reset_log and fails if the last successful reset is too old.
+# Believe the check, not the fact that a container is running.
+
+services:
+  axlepoint-reset:
+    build:
+      context: ../..
+      target: reset
+      secrets:
+        - npmrc
+    container_name: axlepoint-reset
+    restart: always
+    environment:
+      # Six hours. Lower it to watch the thing work; do not raise it without
+      # changing RESET_MAX_AGE_HOURS in the deploy check too, or the check will
+      # start failing for a reason that is not a fault.
+      RESET_INTERVAL_SECONDS: "21600"
+      AXLEPOINT_SEED_TENANT: "sample"
+    env_file:
+      # MUST contain DATABASE_URL (the demo_reset credential, NOT the app's and
+      # never a superuser -- the reset refuses a role that bypasses RLS) and
+      # RESET_ALERT_WEBHOOK. The script refuses to start without the webhook:
+      # a reset that fails silently is worse than one that does not run.
+      #
+      # This file is NOT in the repository and must never be. Create it out of
+      # band; see docs/ops/DEPLOY_POSTGRES.md.
+      - ./axlepoint-reset.env
+    depends_on:
+      - demo-axlepoint
+
+secrets:
+  npmrc:
+    file: ${NPMRC_SECRET_FILE:-/dev/null}
