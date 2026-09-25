@@ -1,0 +1,54 @@
+# Scratch Postgres for developing the AxlePoint data layer and running
+# `npm run test:rls`. Development only: nothing here is deployed, and the
+# credentials are deliberately worthless.
+#
+# PORT 55433, NOT 5432. The edge stack on DREWSPC already runs production
+# Postgres, and a dev compose file that grabbed the default port would collide
+# with it. The same class of mistake once pointed a dev compose project at the
+# PROD volume, because compose names volumes <folder>_<volume>: the volume
+# below is named explicitly so it cannot inherit a name that already means
+# something.
+#
+# 55432 was the obvious next choice and is ALREADY TAKEN, by iep-usability-pg
+# from a sibling session on this machine. Several Claude sessions run scratch
+# databases here at once, so before changing this port, check:
+#
+#   docker ps -a --format '{{.Names}}\t{{.Ports}}' | Select-String '554'
+#
+# and never stop a container you did not start.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   $env:DATABASE_URL = "postgres://axlepoint:axlepoint@localhost:55433/axlepoint"
+#   npm run test:rls
+#
+# The test DROPS AND RECREATES the public schema on every run, so treat this
+# database as disposable. It refuses to run against a URL that looks like Neon
+# or production.
+
+services:
+  axlepoint-dev-db:
+    image: postgres:18-alpine
+    container_name: axlepoint-dev-db
+    environment:
+      POSTGRES_USER: axlepoint
+      POSTGRES_PASSWORD: axlepoint
+      POSTGRES_DB: axlepoint
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      # /var/lib/postgresql, NOT /var/lib/postgresql/data. Postgres 18 changed
+      # this: it stores data in a versioned subdirectory and REFUSES TO START
+      # against the old mount point, exiting 1 with "there appears to be
+      # PostgreSQL data in /var/lib/postgresql/data (unused mount/volume)".
+      # The container then sits unhealthy rather than failing loudly at compose
+      # time, so the symptom looks like a slow start. Measured 2026-09-25.
+      - axlepoint-dev-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axlepoint -d axlepoint"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  axlepoint-dev-pgdata:
+    name: axlepoint-dev-pgdata

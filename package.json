@@ -13,7 +13,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ledger:check": "node scripts/ledger.mjs check"
+    "ledger:check": "node scripts/ledger.mjs check",
+    "test:rls": "vitest run --config vitest.rls.config.ts"
   },
   "dependencies": {
     "@paradigm-codes/auth": "^0.1.0",
@@ -23,6 +24,7 @@
     "jose": "^6.2.3",
     "lucide-react": "^1.17.0",
     "next": "15.5.25",
+    "pg": "^8.23.0",
     "react": "^18",
     "react-dom": "^18",
     "recharts": "^3.8.1",
@@ -31,6 +33,7 @@
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18",
     "@types/react-dom": "^18",
     "@vitest/coverage-v8": "^4.1.11",

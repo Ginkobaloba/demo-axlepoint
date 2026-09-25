@@ -685,3 +685,62 @@ step was additionally proven able to fail on a throwaway branch (one
 step broken at a time, based on this feature branch, reverted after);
 see the PR body for the run links.
 
+
+## D-022: Postgres tenancy is row-scoped with RLS as the second layer (2026-09-25)
+
+The port off SQLite needs a tenancy model before any query moves. Decided:
+`tenant_id` on every row, app-level `WHERE` filtering as the PRIMARY control,
+and Postgres row level security as defence in depth. This lands the schema and
+the access layer only; no query is ported yet and nothing is wired into the app.
+
+**Primary keys are composite, `(tenant_id, id)`.** The SQLite schema used
+`id TEXT PRIMARY KEY`. Kept global, asset `A-1001` could exist for exactly ONE
+tenant, so every tenant would need rewritten ids -- which breaks the generated
+demo data and makes "restore tenant `sample`" impossible without renaming rows.
+
+**Every statement runs inside a transaction, via `withTenant()`.** RLS reads
+`app.tenant_id`, which is transaction-scoped; outside a transaction Postgres
+discards it and the policy compares against NULL, so the query silently returns
+nothing. There is deliberately no way to obtain a raw client from `src/lib/pg.ts`.
+
+**`set_config('app.tenant_id', $1, true)`, never `SET LOCAL`.** `SET` does not
+accept bind parameters, so a `SET LOCAL` form would require interpolating the
+tenant id into SQL text -- a string concatenation inside the one function whose
+entire job is keeping two customers apart. `set_config` is the function form of
+`SET LOCAL`, identical in scope, and takes a parameter.
+
+**The app connects as `axlepoint_app`, which is not a superuser and not the
+table owner.** This is the finding that justified the whole exercise. RLS DOES
+NOT APPLY TO A SUPERUSER -- not with `ENABLE`, not with `FORCE`; `BYPASSRLS` is
+implicit and `FORCE` cannot override it. The first run of the isolation suite
+connected as the Docker image's `POSTGRES_USER`, which is a superuser, and every
+policy was silently inert: an unscoped `SELECT` returned both tenants and tenant
+A successfully inserted a row tagged tenant B, against a schema that reads as
+entirely correct. **Had the test queries carried the `WHERE tenant_id = $1` that
+real query functions carry, every assertion would have passed while RLS did
+nothing at all.** The suite's unscoped queries and its control case are what
+made the difference.
+
+**Role attributes are re-asserted with an unconditional `ALTER ROLE`.** Roles
+are cluster-level, so `DROP SCHEMA` never removes them and `CREATE ROLE IF NOT
+EXISTS` runs exactly once in the life of a database. Putting the security
+attributes on the `CREATE` makes them unenforceable -- found by mutation:
+granting `BYPASSRLS` there left all 19 tests green, because the `CREATE` never
+ran. Against the unconditional `ALTER` the same mutation fails 8 tests.
+
+**RLS is applied by walking the catalog, not table by table.** The realistic
+failure is not a wrong policy, it is table eleven added next month with no
+policy at all. Three tests assert the same property from the other side: every
+table has RLS enabled and forced, every table has a `tenant_isolation` policy,
+every table has a `tenant_id` column.
+
+**`WITH CHECK` is stated but is redundant**, and the comment says so. When it is
+omitted Postgres uses the `USING` expression for new rows too, so writes were
+already covered; deleting the clause changes no test result. It is kept because
+the read rule and write rule being identical is a choice worth spelling out, not
+because it is load-bearing.
+
+Not decided here: the reset under tenancy (sample tenant only, per the
+feasibility study), provisioning, and which driver production uses. The Neon
+HTTP `SET LOCAL` question is still unmeasured and is why nothing tenant-scoped
+may use that transport; see `paradigm-ops/tools/neon/rls-set-local-probe.mjs`.
