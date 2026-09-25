@@ -53,6 +53,27 @@ jobs:
   quick-verify:
     name: Quick Verify (all PRs)
     runs-on: ubuntu-latest
+
+    # Postgres for the tenant-isolation suite (npm run test:rls). It is a
+    # SERVICE, not a compose file, so no volume is mounted and the Postgres 18
+    # data-directory change that breaks the old /var/lib/postgresql/data mount
+    # does not apply here. The credentials are the same worthless pair as
+    # docker-compose.dev.yml, deliberately.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: axlepoint
+          POSTGRES_PASSWORD: axlepoint
+          POSTGRES_DB: axlepoint
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U axlepoint -d axlepoint"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -88,6 +109,15 @@ jobs:
 
       - name: Unit tests
         run: npm test
+
+      # Separate from the unit suite because it needs a real database, and
+      # named as its own step so it cannot quietly stop running while the job
+      # still reports green. The suite REFUSES to skip: with no DATABASE_URL it
+      # fails rather than passing having checked nothing.
+      - name: Tenant isolation (RLS) against Postgres
+        run: npm run test:rls
+        env:
+          DATABASE_URL: postgres://axlepoint:axlepoint@localhost:5432/axlepoint
 
       - name: Build
         run: npm run build
