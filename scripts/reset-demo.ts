@@ -53,7 +53,9 @@ async function alert(message: string): Promise<void> {
 async function logAttempt(
   pool: Pool,
   row: {
-    startedAt: Date;
+    /** How long the attempt took, measured as a DURATION (monotonic-ish), not
+     *  as a host wall-clock instant. The database turns it into a timestamp. */
+    elapsedSeconds: number;
     ok: boolean;
     rowsRestored: number;
     error?: string;
@@ -64,9 +66,12 @@ async function logAttempt(
   const client: PoolClient = await pool.connect();
   try {
     await client.query(
+      // started_at is derived from the DATABASE clock as well: the row's two
+      // timestamps must be comparable to each other, and a host-stamped
+      // started_at beside a now()-stamped finished_at is not.
       `INSERT INTO ops.reset_log (tenant_id, started_at, ok, rows_restored, error)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [TENANT, row.startedAt, row.ok, row.rowsRestored, row.error ?? null],
+       VALUES ($1, now() - make_interval(secs => $2), $3, $4, $5)`,
+      [TENANT, row.elapsedSeconds, row.ok, row.rowsRestored, row.error ?? null],
     );
   } finally {
     client.release();
@@ -110,7 +115,11 @@ async function main(): Promise<number> {
       );
     }
 
-    await logAttempt(pool, { startedAt, ok: true, rowsRestored: inserted });
+    await logAttempt(pool, {
+      elapsedSeconds: (Date.now() - startedAt.getTime()) / 1000,
+      ok: true,
+      rowsRestored: inserted,
+    });
     console.log(
       `reset tenant "${TENANT}": removed ${deleted} rows, restored ${inserted}, ` +
         `in ${Date.now() - startedAt.getTime()}ms`,
@@ -122,7 +131,7 @@ async function main(): Promise<number> {
     // Log first, then alert: the record is the thing a later freshness check
     // reads, and it must exist even if the alert cannot be delivered.
     await logAttempt(pool, {
-      startedAt,
+      elapsedSeconds: (Date.now() - startedAt.getTime()) / 1000,
       ok: false,
       rowsRestored: 0,
       error: message,

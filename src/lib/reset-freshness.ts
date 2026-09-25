@@ -18,7 +18,22 @@
 
 export interface ResetLogRow {
   ok: boolean;
-  finished_at: Date;
+  /**
+   * Age computed BY THE DATABASE, in hours -- not a timestamp.
+   *
+   * ONE CLOCK, DELIBERATELY. This used to be `finished_at: Date` compared
+   * against Node's `new Date()`, which subtracted a HOST timestamp from a
+   * DATABASE one. Over a six-hour window milliseconds are irrelevant, but the
+   * failure is NOT symmetric: a host clock running BEHIND the database shrinks
+   * the age, so a genuinely stale reset reports OK. A retention gate that
+   * fails OPEN on clock skew is worse than no gate, because it is believed.
+   *
+   * Found by the Orchestrator from Treadle's one-in-eight flake, which was the
+   * same shape: a host-clock write compared against the database's now(), with
+   * the container running 47-95ms ahead. Against Neon the skew is larger, and
+   * a laptop that has slept is larger still.
+   */
+  age_hours: number;
   rows_restored: number;
   error: string | null;
 }
@@ -32,11 +47,11 @@ export type ResetVerdict =
 export function assessResetFreshness(
   latest: ResetLogRow | undefined,
   limitHours: number,
-  now: Date = new Date(),
 ): ResetVerdict {
   if (!latest) return { kind: "NEVER_RAN" };
 
-  const ageHours = (now.getTime() - latest.finished_at.getTime()) / 3_600_000;
+  // No clock here at all. The age arrived already computed by the database.
+  const ageHours = latest.age_hours;
 
   // A failed latest run is reported as FAILED even when an older success is
   // still inside the window. The window is not the point: something is broken
@@ -44,7 +59,15 @@ export function assessResetFreshness(
   // goes unnoticed until the window closes.
   if (!latest.ok) return { kind: "FAILED", ageHours, error: latest.error };
 
-  if (ageHours > limitHours) return { kind: "STALE", ageHours, limitHours };
+  // A NEGATIVE age means finished_at is in the future relative to the
+  // database's own now(). With a single clock that cannot legitimately happen,
+  // so it signals something wrong: a restored backup, a hand-inserted row, or
+  // exactly the clock confusion this design removed. Left unhandled it is the
+  // QUIETEST POSSIBLE PASS -- any negative number is comfortably under the
+  // limit, so the gate would report OK forever. Fail closed.
+  if (ageHours < 0 || ageHours > limitHours) {
+    return { kind: "STALE", ageHours, limitHours };
+  }
 
   return { kind: "OK", ageHours, rowsRestored: latest.rows_restored };
 }
