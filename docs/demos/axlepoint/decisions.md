@@ -744,3 +744,68 @@ Not decided here: the reset under tenancy (sample tenant only, per the
 feasibility study), provisioning, and which driver production uses. The Neon
 HTTP `SET LOCAL` question is still unmeasured and is why nothing tenant-scoped
 may use that transport; see `paradigm-ops/tools/neon/rls-set-local-probe.mjs`.
+
+## D-023: Hardening the tenant layer after independent review (2026-09-25)
+
+Fable and Gemini reviewed D-022 independently. No blocker, but thirteen items.
+**Every one was tested against a live Postgres before being acted on**, because
+a fix for a bug that is not there costs as much as a missed one, and the two
+reviewers disagreed about item 12. Results, including the three that came back
+other than as described:
+
+**Confirmed and fixed**
+- **The handle escaped its transaction.** `db` closes over the client; a stashed
+  handle, or an un-awaited `db.query`, ran AFTER release -- measured, it
+  succeeded, with `app.tenant_id` reading `""`. A `done` flag now makes that a
+  `TenantScopeError`.
+- **Views are invisible to the coverage tests.** `CREATE VIEW leaky AS SELECT *
+  FROM assets` leaves `pg_tables` with zero rows for it, and all three coverage
+  tests still passed. A view owned by a privileged role would return every
+  tenant's rows through a relation nothing was checking. Matviews cannot carry
+  RLS at all. The schema now aborts if any `relkind in ('v','m','f')` exists,
+  and a test asserts the same.
+- **`ALTER ROLE` needed a privilege Neon's admin lacks.** Sharper than reported:
+  Postgres requires the altering role to HOLD each attribute it changes, and
+  errors **even when setting the value it already has** ("Only roles with the
+  SUPERUSER attribute may change the SUPERUSER attribute"). The unconditional
+  `ALTER` would have aborted the apply on a correctly-provisioned Neon database.
+  It is now conditional, and raises an actionable error if the attributes are
+  wrong and unfixable.
+- **The role password was committed.** Removed; set out of band.
+- **The identity sequence leaked cross-tenant volume.** The app role read
+  `anomalies_id_seq.last_value` directly. `anomalies.id` is now a `uuid`, there
+  are no sequences left, and the sequence GRANT is gone.
+- **`COMMIT` on an aborted transaction reports success.** It returns quietly
+  with the command tag `ROLLBACK`. A caller that swallowed an intermediate error
+  was told its writes committed when they were discarded. Now checked.
+- **Empty-string GUC.** `current_setting(...)` returns `''` once a transaction
+  has set and ended. `CHECK (tenant_id <> '')` on all 11 tables plus `NULLIF` in
+  the policy. The `CHECK` is the load-bearing half; `NULLIF` is belt and braces.
+
+**Confirmed, but the stated mechanism was wrong**
+- **Idempotency.** The re-apply does not abort at `CREATE POLICY`; it aborts
+  much earlier at `CREATE TABLE meta`, so `DROP POLICY IF EXISTS` would have
+  fixed nothing. This file is a BOOTSTRAP for an empty schema, not a migration.
+  The real problem was that the role block sat at the END and therefore never
+  re-ran once the schema existed. It now runs FIRST.
+
+**Refuted**
+- **A failed `ROLLBACK` does not return a dirty client to the pool.** Measured
+  both ways: after terminating the backend, the next borrow got a fresh pid with
+  `release()` and with `release(err)`. Fable was right, Gemini was not. The
+  `release(err)` call is kept as cheap insurance but is NOT asserted in a test,
+  because asserting behaviour that does not exist is how a suite starts lying.
+
+**Found while testing the claims, and more serious than the claim it replaced**
+- **A dead idle connection crashed the process.** node-postgres emits `error` on
+  the POOL when a client fails while idle, and an `EventEmitter` `error` with no
+  listener is an uncaught exception. Terminating one backend killed the probe
+  outright. A Neon instance scaling to zero, a failover or an admin terminate
+  would have taken the app down. `pool.on("error", ...)` added.
+
+**Scope of the control, recorded because it is easy to overstate.** GUC-based
+RLS defends against a **forgotten `WHERE` clause**. It does NOT defend against
+SQL injection: injected SQL can call `set_config('app.tenant_id', x, false)`,
+which persists on a pooled client beyond the transaction. **Tenant filtering in
+the `WHERE` clause remains the primary control**; parameterised queries remain
+the defence against injection. RLS is the net under both.
