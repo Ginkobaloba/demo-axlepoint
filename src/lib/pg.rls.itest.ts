@@ -417,6 +417,48 @@ describe("a future foreign key cannot be used to probe another tenant", () => {
   // None exist today. This exists so that adding one on (id) alone -- which
   // would let a row reference another tenant's row, and let existence be probed
   // through constraint violations -- fails here rather than in review.
+  it("every PRIMARY KEY and UNIQUE constraint includes tenant_id", async () => {
+    // FOUND BY MUTATION while planning the harborbistro port, not by review.
+    // The reviewer checked "all PK/UNIQUE include tenant_id" by inspection and
+    // was right at the time -- but NOTHING HELD IT. Adding a global
+    // `sku text NOT NULL UNIQUE` to parts left all 60 tests green.
+    //
+    // A global unique is a tenancy bug that only appears with a SECOND tenant:
+    // the first tenant works perfectly, and the second silently cannot insert
+    // a row whose slug/sku/code another tenant already used. harborbistro has
+    // exactly this shape waiting (menu_items.slug TEXT NOT NULL UNIQUE), which
+    // is how it surfaced.
+    const { rows } = await admin.query<{ conname: string; def: string; tablename: string }>(
+      `SELECT c.conname, pg_get_constraintdef(c.oid) AS def, t.relname AS tablename
+         FROM pg_constraint c
+         JOIN pg_class t ON t.oid = c.conrelid
+         JOIN pg_namespace n ON n.oid = c.connamespace
+        WHERE n.nspname = 'public' AND c.contype IN ('p', 'u')`,
+    );
+    expect(rows.length).toBeGreaterThan(0);
+    // Parsed, not regex-matched. The first attempt used a regex whose word
+    // boundary was written through a non-raw string and became a literal
+    // BACKSPACE character (0x08) in this file -- invisible, so it corrupted
+    // silently rather than erroring, and the test then failed against a
+    // schema that was entirely correct. The BASELINE run caught it, not the
+    // mutation: a test that fails on everything is as useless as one that
+    // never fails, and noisier. Splitting the column list cannot be mangled.
+    const columnsOf = (def: string): string[] => {
+      const open = def.indexOf("(");
+      const close = def.indexOf(")", open);
+      if (open < 0 || close < 0) return [];
+      return def
+        .slice(open + 1, close)
+        .split(",")
+        .map((c) => c.trim());
+    };
+
+    const offenders = rows
+      .filter((r) => !columnsOf(r.def).includes("tenant_id"))
+      .map((r) => `${r.tablename}.${r.conname}: ${r.def}`);
+    expect(offenders).toEqual([]);
+  });
+
   it("every foreign key includes tenant_id in its column list", async () => {
     const { rows } = await admin.query<{ conname: string; def: string }>(
       `SELECT c.conname, pg_get_constraintdef(c.oid) AS def
