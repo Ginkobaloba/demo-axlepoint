@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import {
   Activity,
   ArrowRight,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import { Wordmark } from "@/components/brand";
 import { PortalHandoffClaim } from "@/components/portal-handoff-claim";
+import { SignInRequiredNotice } from "@/components/signin-required-notice";
 
 export const dynamic = "force-static";
 
@@ -87,6 +89,14 @@ export default function MarketingPage() {
       {/* Portal handoff claim. Renders nothing unless arriving with a
           #portal_token fragment from the Paradigm Portal. */}
       <PortalHandoffClaim />
+
+      {/* Explains the bounce when middleware redirects here with
+          ?signin=required. Renders nothing otherwise. The boundary is
+          required: useSearchParams defers this subtree to the client, and
+          it is what keeps the rest of this page statically prerendered. */}
+      <Suspense fallback={null}>
+        <SignInRequiredNotice />
+      </Suspense>
 
       {/* Top bar */}
       <header className="sticky top-0 z-40 border-b border-line bg-cream/95 backdrop-blur">

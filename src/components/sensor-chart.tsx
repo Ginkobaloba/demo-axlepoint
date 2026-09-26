@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   CartesianGrid,
   ComposedChart,
@@ -12,11 +12,14 @@ import {
   YAxis,
 } from "recharts";
 import { format } from "date-fns";
+import {
+  CHART_RANGES,
+  type ChartRange,
+  sensorAxisTicks,
+  tickLabel,
+} from "@/lib/chart-ticks";
 import { cn } from "@/lib/cn";
 import { SENSOR_LABELS, SENSOR_UNITS, type SensorType } from "@/lib/types";
-
-const RANGES = ["24h", "7d", "30d", "6mo"] as const;
-type Range = (typeof RANGES)[number];
 
 interface Point {
   ts: number;
@@ -42,7 +45,7 @@ export function SensorChart({
   sensors: SensorType[];
 }) {
   const [sensor, setSensor] = useState<SensorType>(sensors[0]);
-  const [range, setRange] = useState<Range>("7d");
+  const [range, setRange] = useState<ChartRange>("7d");
   const [series, setSeries] = useState<Point[]>([]);
   const [anomalies, setAnomalies] = useState<AnomalyPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,8 +71,7 @@ export function SensorChart({
     void load();
   }, [load]);
 
-  const tickFormat = (ts: number) =>
-    format(new Date(ts * 1000), range === "24h" ? "HH:mm" : range === "6mo" ? "MMM" : "MMM d");
+  const ticks = useMemo(() => sensorAxisTicks(series, range), [series, range]);
 
   return (
     <div className="card">
@@ -91,7 +93,7 @@ export function SensorChart({
           ))}
         </div>
         <div className="flex gap-1">
-          {RANGES.map((r) => (
+          {CHART_RANGES.map((r) => (
             <button
               key={r}
               onClick={() => setRange(r)}
@@ -122,7 +124,8 @@ export function SensorChart({
               type="number"
               scale="time"
               domain={["dataMin", "dataMax"]}
-              tickFormatter={tickFormat}
+              ticks={ticks}
+              tickFormatter={(ts: number) => tickLabel(ts, range)}
               tick={{ fontSize: 11, fill: "#8a877e" }}
               stroke="#e4e0d6"
               minTickGap={48}

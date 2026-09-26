@@ -13,9 +13,17 @@ import {
   getPartConsumingWorkOrders,
   getPartPurchaseOrders,
 } from "@/lib/queries";
+import { detailTitle } from "@/lib/detail-title";
 import { withCurrentTenant } from "@/lib/tenant";
 
 export const dynamic = "force-dynamic";
+
+export async function generateMetadata(props: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await props.params;
+  return { title: detailTitle("Part", id) };
+}
 
 export default async function PartDetailPage(
   props: {

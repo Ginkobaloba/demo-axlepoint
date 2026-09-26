@@ -1096,3 +1096,67 @@ DROP statements.
 - **`deploy-demo.ps1` does not call `check:reset`.** Making the deploy refuse
   to finish without a proven reset is a cloudflare-config change and belongs in
   its own PR.
+
+## D-028: What a first-time visitor actually hits (2026-09-26)
+
+From an end-to-end walk of the LIVE site as a visitor. Nothing was broken: all
+14 routes returned 200, the slowest at 0.41s. These are the four things that
+made a working product look unfinished, plus one naming correction.
+
+**Chart ticks are computed here, not left to recharts.** Measured on AST-0023:
+7d (the default range) and 30d each rendered exactly ONE x-axis label, and 6mo
+rendered eleven labels of which only six were distinct. A week of telemetry
+under a single date is not a chart anyone can read. The line, the anomaly
+markers and the y-axis were all correct throughout, so this was never missing
+data. `src/lib/chart-ticks.ts` now picks the ticks, and the tests assert count
+AND label uniqueness per range. Both failures are covered by mutation: removing
+the de-duplication or collapsing to one tick each turn the suite red.
+
+**De-duplication is on the LABEL, not the timestamp.** Two instants three weeks
+apart are different numbers and both format to "Aug" under the 6mo pattern. The
+viewer reads the label, so the label is what must be unique.
+
+**Two not-found pages, because they catch different things.** A nested
+`not-found.tsx` handles a `notFound()` raised inside its segment, so
+`/app/not-found.tsx` covers a missing record and keeps the sidebar. A URL that
+matches no route has no segment and falls to the ROOT `not-found.tsx`, which
+renders without the /app layout. One file would have left one of those cases on
+the framework default, whose only link led OFF the site.
+
+**Detail pages are titled from the id, with no database read.** Every one of
+them rendered the identical "Operations | AxlePoint Industrial". Titling them
+from the record would mean a second tenant-scoped query per request on the
+hottest pages, purely for a tab label, so `detailTitle()` uses the route param
+and falls back to the plain kind for anything that is not a record id. That
+also covers `generateMetadata` running BEFORE the page can call `notFound()`.
+
+**The /app layout needed a template, not a title.** It set a plain
+`title: "Operations"`. In Next a template applies only to the segment BELOW the
+one declaring it, so a plain string consumes the root template and passes its
+children nothing, which is why every list page rendered bare.
+
+**`?signin=required` is now read by something.** Middleware set it and nothing
+consumed it, so the landing page looked identical with and without it. The
+notice reads `window.location.search` in an effect rather than
+`useSearchParams`, because this page is `force-static` and that hook forces a
+client bailout needing a Suspense boundary. Same approach as
+`PortalHandoffClaim`.
+
+**Two names were too close to real things.** `Norfolk Naval Maintenance Depot`
+names a real military installation and the repo's hard constraints ban real
+installations; `ABS Marine Systems` carries a real classification society's
+name. Replaced with `Kestrel Bay Marine Depot` and
+`Marine Auxiliary Systems Level II`, both checked against a web search. The
+rest of the certification list is real STANDARDS (NFPA 70E, MSHA Part 48, ASNT
+levels), which is realism, not a naming problem: the constraint is about
+organizations, installations and people.
+
+### Still not true
+
+- **The two WRITE flows are still untested.** Creating a work order and
+  dragging a task to reschedule both mutate data, and no reset job runs to undo
+  it, so they were not exercised against the live demo. Wired is not working.
+  They need a scratch database before go-live.
+- **None of this is visible on the live site.** That deployment is the
+  pre-Postgres build, and `main` now requires `DATABASE_URL`, so these land at
+  the Neon redeploy.

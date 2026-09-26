@@ -26,6 +26,7 @@ import {
   getAssetWorkOrders,
   getGeneratedAt,
 } from "@/lib/queries";
+import { detailTitle } from "@/lib/detail-title";
 import { withCurrentTenant } from "@/lib/tenant";
 import { MODEL_CONFIDENCE } from "@/lib/risk";
 import type { RiskBand, RiskFactor } from "@/lib/types";
@@ -44,6 +45,13 @@ const BAND_BAR: Record<RiskBand, string> = {
   high: "bg-risk-high",
   critical: "bg-risk-critical",
 };
+
+export async function generateMetadata(props: {
+  params: Promise<{ id: string }>;
+}) {
+  const { id } = await props.params;
+  return { title: detailTitle("Asset", id) };
+}
 
 export default async function AssetDetailPage(
   props: {
