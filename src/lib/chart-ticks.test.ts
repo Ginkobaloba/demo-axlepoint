@@ -60,6 +60,45 @@ describe("sensorAxisTicks, per range", () => {
   it("returns nothing for an empty series rather than inventing an axis", () => {
     expect(sensorAxisTicks([], "7d")).toEqual([]);
   });
+
+  // REGRESSION, measured against a real Postgres on 2026-09-26. ts is a bigint
+  // and node-postgres returns those as STRINGS, so the live endpoint served
+  // { ts: "1789797600" } while the type said number. The axis then rendered no
+  // labels at all: string bounds are rejected by Number.isFinite, so the tick
+  // list came back empty and nothing anywhere reported an error.
+  it("handles the STRING timestamps a Postgres bigint actually returns", () => {
+    const numeric = series(SPAN["7d"]);
+    const stringy = numeric.map((p) => ({ ts: String(p.ts) }));
+
+    expect(sensorAxisTicks(stringy, "7d")).toEqual(
+      sensorAxisTicks(numeric, "7d"),
+    );
+    expect(sensorAxisTicks(stringy, "7d").length).toBeGreaterThan(1);
+  });
+
+  it("finds the true min and max of string timestamps, not the lexical ones", () => {
+    // "999999999" sorts AFTER "1002000000" as text ("9" > "1") but is the
+    // EARLIER instant. Lexical bounds would invert the axis. The two are 23
+    // days apart so their labels genuinely differ and nothing collapses.
+    const earlier = 999999999; // 2001-09-09
+    const later = 1002000000; // 2001-10-02
+    const ticks = sensorAxisTicks(
+      [{ ts: String(later) }, { ts: String(earlier) }],
+      "30d",
+    );
+    expect(ticks[0]).toBe(earlier);
+    expect(ticks[ticks.length - 1]).toBe(later);
+    expect(ticks.length).toBeGreaterThan(1);
+  });
+
+  it("skips unparseable timestamps instead of poisoning the domain", () => {
+    const ticks = sensorAxisTicks(
+      [{ ts: BASE }, { ts: "not-a-number" }, { ts: BASE + 7 * DAY }],
+      "7d",
+    );
+    expect(ticks[0]).toBe(BASE);
+    expect(ticks.length).toBeGreaterThan(1);
+  });
 });
 
 describe("uniqueTimeTicks de-duplicates on the LABEL", () => {

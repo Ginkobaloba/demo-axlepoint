@@ -241,14 +241,23 @@ export async function getReadings(
   sensor: SensorType,
   fromTs: number,
 ): Promise<{ ts: number; value: number }[]> {
-  // ts is bigint. Without the int8 parser registered in pg.ts these come back
-  // as strings and every chart silently plots nothing useful.
-  return db.query<{ ts: number; value: number }>(
+  // ts is bigint, which node-postgres hands back as a STRING. pg.ts registers
+  // an int8 parser, and MEASURED 2026-09-26 against a real database, that
+  // parser does not take effect in the built Next server: this endpoint
+  // returned ts as "1789797600" while TypeScript insisted it was a number.
+  // The sensor chart's x-axis then rendered no labels at all, because tick
+  // arithmetic on a string CONCATENATES instead of adding.
+  //
+  // So the conversion is done here rather than left to a global side effect
+  // whose reach depends on module identity in a bundler. Epoch seconds are
+  // ~1.8e9, far below Number.MAX_SAFE_INTEGER, so this is lossless.
+  const rows = await db.query<{ ts: number | string; value: number }>(
     `SELECT ts, value FROM sensor_readings
       WHERE tenant_id = $1 AND asset_id = $2 AND sensor_type = $3 AND ts >= $4
       ORDER BY ts`,
     [db.tenantId, assetId, sensor, fromTs],
   );
+  return rows.map((row) => ({ ts: Number(row.ts), value: Number(row.value) }));
 }
 
 export async function getAssetAnomalies(
@@ -256,10 +265,13 @@ export async function getAssetAnomalies(
   assetId: string,
   fromTs = 0,
 ): Promise<Anomaly[]> {
-  return db.query<Anomaly>(
+  // Same bigint-as-string problem as getReadings, for `ts` and for the
+  // identity `id`. Both are declared number and both arrive as strings.
+  const rows = await db.query<Anomaly>(
     "SELECT * FROM anomalies WHERE tenant_id = $1 AND asset_id = $2 AND ts >= $3 ORDER BY ts DESC",
     [db.tenantId, assetId, fromTs],
   );
+  return rows.map((row) => ({ ...row, id: Number(row.id), ts: Number(row.ts) }));
 }
 
 // --------------------------------------------------------------- work orders

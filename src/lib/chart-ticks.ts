@@ -93,17 +93,31 @@ export function uniqueTimeTicks(
  * and last element, so an out-of-order payload cannot invert the axis.
  */
 export function sensorAxisTicks(
-  series: readonly { ts: number }[],
+  series: readonly { ts: number | string }[],
   range: ChartRange,
 ): number[] {
   if (series.length === 0) return [];
 
+  // ts is COERCED, because it has genuinely arrived as a string. The readings
+  // endpoint reads a Postgres bigint, node-postgres hands those back as
+  // strings, and the int8 parser registered in pg.ts does not take effect in
+  // the built Next server (measured 2026-09-26). queries.ts now converts at
+  // the boundary; this is the second line of defence, because the failure is
+  // invisible from here: string timestamps make `from` and `to` strings,
+  // Number.isFinite rejects them, uniqueTimeTicks returns nothing, and the
+  // chart renders a line with NO x-axis labels and no error anywhere.
+  //
+  // Comparing before coercing would also be wrong on its own: "9..." sorts
+  // after "10..." lexicographically, so min and max would be the wrong rows.
   let from = Infinity;
   let to = -Infinity;
   for (const point of series) {
-    if (point.ts < from) from = point.ts;
-    if (point.ts > to) to = point.ts;
+    const ts = Number(point.ts);
+    if (!Number.isFinite(ts)) continue;
+    if (ts < from) from = ts;
+    if (ts > to) to = ts;
   }
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return [];
 
   return uniqueTimeTicks(from, to, TARGET_TICKS[range], (ts) =>
     tickLabel(ts, range),
