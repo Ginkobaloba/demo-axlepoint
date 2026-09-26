@@ -3,8 +3,20 @@ import { FlaskConical, LogOut, Search } from "lucide-react";
 import { Wordmark } from "@/components/brand";
 import { SidebarNav } from "@/components/sidebar-nav";
 
+/**
+ * `default` titles /app itself; `template` is what the CHILD pages need.
+ *
+ * A plain `title: "Operations"` here looked harmless and was not: in Next a
+ * title template applies only to the segment BELOW the one that declares it,
+ * so a plain string consumes the root layout's template and hands its children
+ * nothing. Every list page therefore rendered bare ("Assets", "Reports") with
+ * no product name in the tab or the bookmark.
+ */
 export const metadata = {
-  title: "Operations",
+  title: {
+    default: "Operations",
+    template: "%s | AxlePoint Industrial",
+  },
 };
 
 export default function AppLayout({
