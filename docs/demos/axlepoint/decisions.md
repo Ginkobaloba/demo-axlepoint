@@ -1160,3 +1160,57 @@ organizations, installations and people.
 - **None of this is visible on the live site.** That deployment is the
   pre-Postgres build, and `main` now requires `DATABASE_URL`, so these land at
   the Neon redeploy.
+
+## D-029: The chart queries convert bigint at the boundary (2026-09-26)
+
+Found by doing what D-028 said was still owed: running the app against a real
+Postgres to exercise the two write flows. Both write flows turned out to work.
+This was the read path, and it was broken in a way nothing reported.
+
+**`ts` arrived as a string and the sensor chart lost its entire x-axis.** `ts`
+is `bigint`, and node-postgres returns bigints as STRINGS deliberately, because
+a 64-bit integer can exceed `Number.MAX_SAFE_INTEGER`. `pg.ts` registers an
+int8 parser to undo that. Measured on the built Next server, that parser DOES
+NOT TAKE EFFECT: `/api/assets/AST-0023/readings` served `ts: "1789797600"`
+while TypeScript insisted `ts: number`.
+
+**Nothing failed.** The line drew, the anomaly markers drew, the y-axis drew,
+the caption counted four anomalies. Only the time labels vanished, because
+string bounds make `Number.isFinite` false, so the tick list came back empty. A
+chart with a line and no time axis reads as a design choice, not a defect.
+
+**So the conversion happens in `queries.ts`, not in a global side effect.**
+`pg.ts` already said as much ("queries that feed arithmetic ALSO cast ::int in
+SQL, so they do not depend on this global setting"), and `getReadings` was the
+one that fed arithmetic and did not. A parser registered by importing a module
+depends on module identity under a bundler; a conversion at the query boundary
+does not. Every `COUNT(*)` in queries.ts was already `::int` for the same
+reason. The type said `number` and the value was a string, which is the part
+worth remembering: TypeScript cannot check what a driver hands back at runtime.
+
+**`sensorAxisTicks` also coerces, as a second line of defence.** Comparing
+before coercing would be wrong anyway: "9..." sorts after "10..." as text, so
+lexical bounds pick the wrong rows for min and max.
+
+**The unit tests could not have caught this.** They feed the function numbers,
+which is exactly what the database does not return. `queries.bigint.itest.ts`
+asserts the types against a real Postgres, and it was mutation-checked: with
+the coercion removed two tests go red, and with BOTH defences removed all three
+do, reproducing the original empty axis.
+
+### Verified working, against a real database
+
+Both write flows were exercised end to end and both persist:
+
+- **Create a work order.** The form POSTs, WO-1151 was created, the redirect
+  and success banner are correct, and the list went 150 -> 151. Note the stored
+  title is DERIVED (`Corrective - Engine 23`) and the visitor's typed title is
+  discarded by design (D-012, anonymity). The page explains that for the
+  description but NOT for the title, which is a copy gap worth closing.
+- **Drag to reschedule.** PM-0066 moved from the 26th to the 28th,
+  `PATCH /api/schedule/PM-0066` returned 200, and `next_due` is `2026-09-28` in
+  the database after a reload.
+
+The axis now labels every range distinctly: 24h 6 labels, 7d 7, 30d 6, 6mo 6.
+Spacing is even-by-time rather than calendar-aligned, so an occasional day or
+month is skipped. That is cosmetic and left alone.
