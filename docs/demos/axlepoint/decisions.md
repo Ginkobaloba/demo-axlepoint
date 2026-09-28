@@ -1214,3 +1214,64 @@ Both write flows were exercised end to end and both persist:
 The axis now labels every range distinctly: 24h 6 labels, 7d 7, 30d 6, 6mo 6.
 Spacing is even-by-time rather than calendar-aligned, so an occasional day or
 month is skipped. That is cosmetic and left alone.
+
+## D-030: What the first real Neon apply found (2026-09-28)
+
+Drew provisioned a branch of the `paradigm` Neon project (free tier, so the
+demo shares compute and storage with portal production; the branch was forked
+from an empty parent so no portal data was ever copied into it). Applying the
+schema there broke twice, and both breaks were real defects rather than Neon
+being awkward.
+
+**The demo_reset attribute re-assert demanded a superuser to assert something
+already true.** `ALTER ROLE demo_reset NOSUPERUSER NOBYPASSRLS ...` ran
+unconditionally, and its comment claimed it matched the axlepoint_app block
+above. It did not: that one is conditional. Neon's `neondb_owner` is not a
+superuser, so the apply died with "permission denied to alter role".
+
+Measured on Neon, PostgreSQL 18.6: a freshly created role already has all five
+attributes false, and of the five clauses **only NOSUPERUSER is refused**.
+NOBYPASSRLS, NOCREATEDB and NOCREATEROLE all succeed. Postgres requires the
+altering role to HOLD an attribute to set it, even when setting the value it
+already has. Testing first keeps the guarantee and drops the impossible demand:
+a correct role skips the ALTER, a dangerous one still fails loudly by name.
+
+**Membership is not an attribute, and nothing here was checking it.**
+`rolsuper` and `rolbypassrls` describe a role itself. A role that merely
+BELONGS to a privileged group reports false for both and can still defeat every
+policy with SET ROLE. On Neon, `neondb_owner` is a member of `neon_superuser`,
+which carries BYPASSRLS plus pg_read_all_data and pg_write_all_data, and a role
+made through the Neon CONSOLE is granted that membership.
+
+Verified both ways: a role created in SQL, as schema.sql does, gets NO
+memberships and `pg_has_role` is false for both neon_superuser and
+pg_read_all_data. So the roles this schema creates are genuinely confined, and
+a console-provisioned one would not have been. schema.sql now fails the apply
+on such a membership, written portably (it asks which groups confer the danger
+rather than naming a Neon-specific role that does not exist locally).
+
+**The seed overwrote the reset credential with a guessable literal.**
+`generate-db.ts` ran `ALTER ROLE demo_reset PASSWORD 'demo_reset'`
+unconditionally so it could seed THROUGH the reset path, which is good design.
+The password was not. demo_reset is the role whose DELETE carries no WHERE and
+is scoped only by RLS, so seeding a real database silently downgraded the
+credential that matters most. Neon caught it for us: the control plane answered
+HTTP 400 "insecure password" and the seed failed outright.
+
+Now the operator supplies `DEMO_RESET_DATABASE_URL` and the role is never
+touched; only when none is supplied is one minted, randomly rather than as a
+literal, so no well-known password is left behind anywhere.
+
+### Verified on Neon, not inferred
+
+- 11 public tables, **all 11 with RLS enabled**; both roles `rolsuper=false
+  rolbypassrls=false` and no dangerous memberships.
+- 545,927 rows seeded THROUGH the reset running as demo_reset, in 9.7s, which
+  also proves the reset path works there.
+- Isolation tested with the CONTROL first and with NO `WHERE tenant_id` in the
+  queries, so it measures the policy: tenant `sample` reads 100 assets, a
+  different tenant reads 0, no tenant set reads 0, and the app role is refused
+  `pristine` with 42501.
+- KPIs: MTBF delta -24% (inside the +/-35% band), critical=5 (inside 3-6). The
+  top two risk scores TIE at 91, where the criteria ask for distinct tops. That
+  is a re-seed away and purely cosmetic.

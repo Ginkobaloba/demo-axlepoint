@@ -349,18 +349,88 @@ BEGIN
 END
 $$;
 
+-- Attributes are re-asserted because a CREATE ROLE guarded by IF NOT EXISTS
+-- runs ONCE in the life of a cluster, so anything written there stops being
+-- enforced the moment the role exists.
+--
+-- CONDITIONAL, exactly like the axlepoint_app block above. It used to be an
+-- unconditional ALTER, and the comment here used to claim that matched
+-- axlepoint_app; it did not, and the difference broke the very first apply
+-- against Neon with "permission denied to alter role".
+--
+-- MEASURED on Neon 2026-09-28 (PostgreSQL 18.6, role neondb_owner, which is
+-- NOT a superuser): a freshly created role already has all five attributes
+-- false, and of the five clauses only NOSUPERUSER is refused. NOBYPASSRLS,
+-- NOCREATEDB and NOCREATEROLE all succeed. Postgres requires the altering role
+-- to HOLD an attribute to set it, even when setting the value it already has,
+-- so an unconditional NOSUPERUSER demands a superuser in order to assert
+-- something that is already true.
+--
+-- Testing the attributes first keeps the guarantee and drops the impossible
+-- demand: a correctly provisioned role skips the ALTER entirely, and a role
+-- that genuinely holds a dangerous attribute still fails LOUDLY, naming it.
 DO $$
+DECLARE
+  r record;
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'demo_reset') THEN
     CREATE ROLE demo_reset LOGIN;
   END IF;
+
+  SELECT rolsuper, rolbypassrls, rolreplication, rolcreatedb, rolcreaterole
+    INTO r FROM pg_roles WHERE rolname = 'demo_reset';
+
+  IF r.rolsuper OR r.rolbypassrls OR r.rolreplication OR r.rolcreatedb OR r.rolcreaterole THEN
+    BEGIN
+      ALTER ROLE demo_reset
+        NOSUPERUSER NOBYPASSRLS NOREPLICATION NOCREATEDB NOCREATEROLE;
+    EXCEPTION WHEN insufficient_privilege THEN
+      RAISE EXCEPTION
+        'demo_reset holds privileges that defeat RLS (super=% bypassrls=% repl=%), and this role cannot remove them. Provision it without them, out of band, then re-apply.',
+        r.rolsuper, r.rolbypassrls, r.rolreplication;
+    END;
+  END IF;
 END
 $$;
 
--- Same unconditional re-assert as axlepoint_app, for the same reason: a
--- CREATE ROLE guarded by IF NOT EXISTS runs once in the life of a cluster, so
--- attributes written there stop being enforced the moment the role exists.
-ALTER ROLE demo_reset NOSUPERUSER NOBYPASSRLS NOREPLICATION NOCREATEDB NOCREATEROLE;
+-- ---------------------------------------------------------------------------
+-- MEMBERSHIP IS NOT AN ATTRIBUTE, AND THE ATTRIBUTE CHECKS ABOVE CANNOT SEE IT.
+--
+-- rolsuper and rolbypassrls describe a role itself. A role that merely BELONGS
+-- to a privileged group reports false for both and can still defeat every
+-- policy here by running SET ROLE. Neither block above would notice.
+--
+-- This is not hypothetical on a managed Postgres. MEASURED on Neon 2026-09-28:
+-- `neondb_owner` is a member of `neon_superuser`, which carries BYPASSRLS plus
+-- pg_read_all_data and pg_write_all_data. A role provisioned through the Neon
+-- CONSOLE is granted that membership; a role created in SQL, as the blocks
+-- above do, is granted nothing (verified: no memberships, pg_has_role false
+-- for both neon_superuser and pg_read_all_data).
+--
+-- So the apply fails rather than trusting how the role happened to be made.
+-- Written portably: it asks which groups confer the danger instead of naming
+-- a Neon-specific role that does not exist on a local Postgres.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  offender text;
+BEGIN
+  SELECT string_agg(r.rolname || ' -> ' || g.rolname, ', ' ORDER BY r.rolname)
+    INTO offender
+    FROM pg_auth_members m
+    JOIN pg_roles g ON g.oid = m.roleid
+    JOIN pg_roles r ON r.oid = m.member
+   WHERE r.rolname IN ('axlepoint_app', 'demo_reset')
+     AND (g.rolsuper OR g.rolbypassrls
+          OR g.rolname IN ('pg_read_all_data', 'pg_write_all_data'));
+
+  IF offender IS NOT NULL THEN
+    RAISE EXCEPTION
+      'A role RLS must confine belongs to a group that defeats it (%). SET ROLE would bypass every policy in this file. Provision the role in SQL rather than through a managed console, or revoke the membership, then re-apply.',
+      offender;
+  END IF;
+END
+$$;
 
 GRANT USAGE ON SCHEMA pristine TO demo_reset;
 GRANT SELECT ON ALL TABLES IN SCHEMA pristine TO demo_reset;
