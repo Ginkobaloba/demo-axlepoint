@@ -21,6 +21,7 @@
  * be proved row-identical against the SQLite generator it replaced (D-025),
  * and it is useful for any test that wants a fixed world.
  */
+import { randomBytes } from "crypto";
 import fs from "fs";
 import path from "path";
 import { Pool } from "pg";
@@ -952,11 +953,36 @@ async function main(): Promise<void> {
     // demo_reset, never as this admin connection: resetTenantFromPristine
     // refuses a role that can bypass RLS, because its DELETE carries no WHERE
     // and RLS is the only thing scoping it to one tenant.
-    await client.query("ALTER ROLE demo_reset PASSWORD 'demo_reset'");
-    const resetUrl = new URL(url);
-    resetUrl.username = "demo_reset";
-    resetUrl.password = "demo_reset";
-    const resetPool = new Pool({ connectionString: resetUrl.toString() });
+    // THE CREDENTIAL IS SUPPLIED, OR MINTED FRESH. It used to be an
+    // unconditional `ALTER ROLE demo_reset PASSWORD 'demo_reset'`, which had
+    // two problems, one of them serious.
+    //
+    // Serious: it OVERWROTE whatever password demo_reset already had, with a
+    // guessable literal, every time anyone ran this script. demo_reset is the
+    // role whose DELETE carries no WHERE and is scoped only by RLS, so seeding
+    // a real database silently downgraded the credential that matters most.
+    //
+    // Second: a managed Postgres rejects it outright. MEASURED on Neon
+    // 2026-09-28, the control plane answered HTTP 400 "insecure password, try
+    // including more special characters" and the whole seed failed.
+    //
+    // So: an operator who HAS the credential passes it, and this never touches
+    // the role. Only when none is supplied does it mint one, and the minted
+    // one is random rather than a literal, so a stale well-known password
+    // cannot be left behind on any database this ever runs against.
+    const suppliedResetUrl = process.env.DEMO_RESET_DATABASE_URL?.trim();
+    let resetUrlStr: string;
+    if (suppliedResetUrl) {
+      resetUrlStr = suppliedResetUrl;
+    } else {
+      const minted = randomBytes(18).toString("base64url") + "aA1!";
+      await client.query(`ALTER ROLE demo_reset PASSWORD '${minted}'`);
+      const resetUrl = new URL(url);
+      resetUrl.username = "demo_reset";
+      resetUrl.password = minted;
+      resetUrlStr = resetUrl.toString();
+    }
+    const resetPool = new Pool({ connectionString: resetUrlStr });
     const resetClient = await resetPool.connect();
     try {
       const startedAt = new Date();
