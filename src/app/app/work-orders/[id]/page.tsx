@@ -65,10 +65,22 @@ export default async function WorkOrderDetailPage(
       </Link>
 
       {searchParams.created && (
-        <div className="flex items-center gap-2 rounded-md border border-risk-low/30 bg-risk-low/10 px-4 py-3 text-sm font-medium text-risk-low">
-          <CheckCircle2 className="h-4 w-4" />
-          Work order drafted. Assign a technician, set a due date, attach parts,
-          and move it to In progress below.
+        <div className="flex items-start gap-2 rounded-md border border-risk-low/30 bg-risk-low/10 px-4 py-3 text-sm font-medium text-risk-low">
+          <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>
+            Work order drafted. Assign a technician, set a due date, attach
+            parts, and move it to In progress below.{" "}
+            {/* The visitor typed a title and it is NOT the one now shown. The
+                new-order form warns about this beforehand; this says it at the
+                moment they would otherwise notice it silently. Anonymity is
+                D-012: free text a visitor types is never persisted, so it
+                cannot outlive a reset or reach another visitor. */}
+            <span className="font-normal">
+              The title above is generated from the asset and type. The one you
+              typed is not stored, so nothing you write here reaches another
+              visitor.
+            </span>
+          </span>
         </div>
       )}
 
