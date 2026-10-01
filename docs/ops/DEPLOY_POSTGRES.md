@@ -188,6 +188,36 @@ superuser the same statement removes **every tenant's rows**. The script checks
 `rolsuper`/`rolbypassrls` and refuses (MEASURED), but do not rely on that being
 the only thing between you and a wipe.
 
+**Build the image first.** The compose fragment does NOT build -- it runs a
+prebuilt image, like every other edge service:
+
+```powershell
+$npmrc = Join-Path $env:TEMP "sidecar-axlepoint-npmrc.txt"
+[System.IO.File]::WriteAllText($npmrc,
+  "@paradigm-codes:registry=https://npm.pkg.github.com`n//npm.pkg.github.com/:_authToken=$(gh auth token)`n",
+  (New-Object System.Text.UTF8Encoding($false)))
+try {
+  docker build --target reset --secret "id=npmrc,src=$npmrc" `
+    -t demo-axlepoint-reset:latest C:\dev\demo-axlepoint
+} finally { Remove-Item $npmrc -Force }
+```
+
+`--target reset` is required: the Dockerfile's last stage is `run` (the app), on
+purpose -- see PR #54. The npmrc secret is needed because `@paradigm-codes/auth`
+comes from GitHub Packages, and it is written without a BOM because npm treats a
+BOM as part of the first key. `scripts/deploy-demo.ps1` has the same logic with a
+scope guard worth reading.
+
+**Why compose does not build this.** It used to, with
+`build: {context: ../.., target: reset}`, and that was actively unsafe. Compose
+resolves `build.context` relative to the PROJECT DIRECTORY -- the first `-f`
+file's directory -- not relative to the fragment declaring it. Merged into the
+edge stack as documented, `../..` resolved to `C:\dev` and the build read
+`C:\dev\Dockerfile`. It failed with "the Dockerfile cannot be empty" only
+because that stray file is 0 bytes; had it contained anything valid, compose
+would have built a different image entirely and run it as the process holding
+the `demo_reset` credential.
+
 Then bring the sidecar up as part of the edge stack:
 
 ```powershell
@@ -200,9 +230,33 @@ docker compose -f edge/docker-compose.yml `
 **Adding a service to the edge stack is a production change.** Both compose
 files, never one alone. See `cloudflare-config/CLAUDE.md`.
 
-**UNVERIFIED:** the sidecar image has not been built. `docker build` is
-currently blocked earlier at `npm ci` with `E401` on `@paradigm-codes/auth`
-(the `read:packages` scope, with Drew). Build it once before trusting it.
+### Then prove it, twice, because the two halves fail independently
+
+```powershell
+npx tsx --env-file=$env:USERPROFILE\.secrets\axlepoint_reset.local.txt `
+  scripts/check-reset-freshness.ts
+```
+
+That must print `ok: last reset <n>h ago`. **It proves the reset and says
+nothing about the alert.** `alert()` fires only on FAILURE, so a healthy reset is
+silent: a green freshness check and a completely dead alert path look identical.
+
+So exercise the alert deliberately once, with a **negative control first** (a
+bogus token must report `delivered=false`, or a `true` from the real one means
+nothing), then the real credential. Verified 2026-10-01:
+
+```
+negative control -> delivered=false  chat.postMessage returned HTTP 200 but ok=false (invalid_auth)
+positive control -> delivered=true   chat.postMessage ok
+```
+
+Note what the negative control measured: Slack really does answer **HTTP 200**
+for an invalid token. Code that checked the HTTP status would have reported that
+dead token as a delivered alert.
+
+**Verified 2026-10-01:** image built, sidecar running, first reset removed and
+restored 545,927 rows in 9.9s, `check:reset` green at 0.0h, and both alert
+controls as above.
 
 ---
 
