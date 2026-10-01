@@ -39,13 +39,26 @@ services:
       AXLEPOINT_SEED_TENANT: "sample"
     env_file:
       # MUST contain DATABASE_URL (the demo_reset credential, NOT the app's and
-      # never a superuser -- the reset refuses a role that bypasses RLS) and
-      # RESET_ALERT_WEBHOOK. The script refuses to start without the webhook:
-      # a reset that fails silently is worse than one that does not run.
+      # never a superuser -- the reset refuses a role that bypasses RLS) and an
+      # alert destination: either RESET_ALERT_WEBHOOK, or
+      # RESET_ALERT_SLACK_TOKEN with RESET_ALERT_SLACK_CHANNEL. The script
+      # refuses to start without one, because a reset that fails silently is
+      # worse than one that does not run. See src/lib/reset-alert.ts.
       #
-      # This file is NOT in the repository and must never be. Create it out of
-      # band; see docs/ops/DEPLOY_POSTGRES.md.
-      - ./axlepoint-reset.env
+      # NOT `./axlepoint-reset.env`, which is what this file said until
+      # 2026-10-01 and is actively unsafe on the deploy host. Two reasons, both
+      # checked rather than assumed:
+      #   1. `.gitignore` matches `.env*.local`, which does NOT match
+      #      `axlepoint-reset.env` -- `git check-ignore` confirmed the path was
+      #      not ignored, so the credential was one `git add -A` from being
+      #      committed.
+      #   2. Google Drive for desktop two-way mirrors C:\dev. Anything secret
+      #      under this tree is uploaded, and a Drive copy outlives a local
+      #      delete by sitting in Drive Trash.
+      # So it lives beside the other demo credentials, outside the repository
+      # and outside the mirrored tree, using the same indirection the edge
+      # compose already uses for demo_env_axlepoint.local.txt.
+      - ${EDGE_SECRETS_DIR:-C:/Users/Drama/.secrets}/axlepoint_reset.local.txt
     depends_on:
       - demo-axlepoint
 

@@ -52,8 +52,22 @@
   NOT DONE YET, and deliberately after the PR: `axlepoint-reset.env` is not
   written and the sidecar is not running, so `check:reset` is still RED (57.4h+
   against a 6h limit). Nothing is deployed by this entry.
+  (3) Also in this PR, found while preparing to create the file: the sidecar's
+  documented credential location was unsafe on this host. `ops/reset-sidecar/compose.yml`
+  said `./axlepoint-reset.env`, i.e. inside the repo. `.gitignore` matches
+  `.env*.local`, which does NOT match `axlepoint-reset.env` -- `git check-ignore`
+  confirmed the path was not ignored, so the credential was one `git add -A` from
+  being committed. And Google Drive for desktop two-way mirrors C:\dev, so anything
+  secret under this tree is uploaded and the Drive copy outlives a local delete.
+  Changed the compose fragment to read
+  `${EDGE_SECRETS_DIR:-C:/Users/Drama/.secrets}/axlepoint_reset.local.txt`, the same
+  indirection the edge compose already uses for demo_env_axlepoint.local.txt; added
+  defensive .gitignore patterns so a file created in the old spot still cannot be
+  committed; and corrected docs/ops/DEPLOY_POSTGRES.md, which was sending the next
+  person to the unsafe path.
 - **Refs:** src/lib/reset-alert.ts, src/lib/reset-alert.test.ts,
   scripts/reset-demo.ts, scripts/dockerfile-stages.test.mjs,
-  docs/demos/axlepoint/decisions.md D-031, ops/reset-sidecar/compose.yml,
+  docs/demos/axlepoint/decisions.md D-031, ops/reset-sidecar/compose.yml (credential path), .gitignore,
+  docs/ops/DEPLOY_POSTGRES.md,
   _scripts/slack-daedalus.ps1 (the proven chat.postMessage shape and the
   D0C2YKLSTLM default), PR #54 (the guard this fixes)
