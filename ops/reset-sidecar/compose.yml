@@ -24,11 +24,36 @@
 
 services:
   axlepoint-reset:
-    build:
-      context: ../..
-      target: reset
-      secrets:
-        - npmrc
+    # A PREBUILT IMAGE, NOT A BUILD. This said `build: {context: ../.., target:
+    # reset}` until 2026-10-01, which does not work for the invocation documented
+    # below and failed dangerously rather than cleanly.
+    #
+    # Compose resolves `build.context` relative to the PROJECT DIRECTORY -- the
+    # directory of the FIRST `-f` file -- not relative to the fragment that
+    # declares it. Merged into the edge stack as intended, `../..` therefore
+    # resolved to C:\dev, not to this repository, and the build read
+    # C:\dev\Dockerfile.
+    #
+    # It failed with "the Dockerfile cannot be empty" only because that stray
+    # file happens to be 0 bytes. Had it contained anything valid, compose would
+    # have built a COMPLETELY DIFFERENT image and run it here -- as the process
+    # holding the demo_reset database credential, whose DELETE carries no WHERE
+    # clause. The empty file is the only reason this was loud.
+    #
+    # So compose no longer builds, matching every other edge service: the image
+    # is built deliberately, with a context named explicitly, and compose just
+    # runs it. Build it with (one line, from anywhere):
+    #
+    #   docker build --target reset --secret id=npmrc,src=<npmrc> \
+    #     -t demo-axlepoint-reset:latest C:\dev\demo-axlepoint
+    #
+    # The npmrc secret is needed because @paradigm-codes/auth comes from GitHub
+    # Packages; scripts/deploy-demo.ps1 shows how that file is produced and why
+    # it is written without a BOM. See docs/ops/DEPLOY_POSTGRES.md.
+    image: demo-axlepoint-reset:latest
+    # Never reach for Docker Hub: this image is local-only and a pull would
+    # fail confusingly rather than telling you the build step was skipped.
+    pull_policy: never
     container_name: axlepoint-reset
     restart: always
     environment:
@@ -62,6 +87,6 @@ services:
     depends_on:
       - demo-axlepoint
 
-secrets:
-  npmrc:
-    file: ${NPMRC_SECRET_FILE:-/dev/null}
+# No top-level `secrets:` block any more. It existed only to feed the npmrc into
+# a `build:` that this fragment no longer performs, and its default of /dev/null
+# was never a real path on the deploy host anyway.
