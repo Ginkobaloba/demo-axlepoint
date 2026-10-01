@@ -22,10 +22,20 @@ import { fileURLToPath } from "node:url";
 
 const DOCKERFILE = join(dirname(fileURLToPath(import.meta.url)), "..", "Dockerfile");
 
+// Split on CRLF *or* LF. Not defensive padding: git checks the Dockerfile out
+// with CRLF on Windows and LF on the Linux runner (verified: `file Dockerfile`
+// reports CRLF terminators here). A parser that splits on a bare newline then
+// leaves a trailing carriage return on every line. The CMD regex below ends in
+// `$`, and in JavaScript `.` does not match a carriage return, so the capture
+// silently fails to match -- lastStageCmd returned null locally while CI, which
+// checks out LF, stayed green. A guard that holds on only one platform is worse
+// than none, because the green run is the one people look at.
+const LINES = /\r?\n/;
+
 /** Stage names in file order, for `FROM <image> AS <name>` lines. */
 export function stageNames(text) {
   const names = [];
-  for (const line of text.split("\n")) {
+  for (const line of text.split(LINES)) {
     const match = /^\s*FROM\s+\S+\s+AS\s+(\S+)/i.exec(line);
     if (match) names.push(match[1]);
   }
@@ -34,7 +44,7 @@ export function stageNames(text) {
 
 /** The CMD of the last stage -- i.e. of the image a bare `docker build` makes. */
 export function lastStageCmd(text) {
-  const lines = text.split("\n");
+  const lines = text.split(LINES);
   let cmd = null;
   for (const line of lines) {
     if (/^\s*FROM\s+\S+\s+AS\s+\S+/i.test(line)) cmd = null;
@@ -62,6 +72,26 @@ describe("the parser catches the layout that caused the outage", () => {
 
   it("reads the sidecar loop as what a bare build would deploy", () => {
     expect(lastStageCmd(WRONG_ORDER)).toContain("db:reset");
+  });
+
+  // Regression, 2026-10-01. The committed Dockerfile is checked out CRLF on
+  // Windows and LF on the Linux runner. Splitting on a bare newline left a
+  // trailing carriage return that made lastStageCmd return null, so this file's
+  // central assertion failed locally and passed in CI. Both line endings must
+  // parse identically, and the asymmetry is the whole danger: the platform that
+  // reported green was the one nobody doubted.
+  it("parses CRLF exactly as it parses LF", () => {
+    const crlf = WRONG_ORDER.replace(/\n/g, "\r\n");
+    expect(crlf).toContain("\r\n");
+    expect(stageNames(crlf)).toEqual(stageNames(WRONG_ORDER));
+    expect(lastStageCmd(crlf)).toBe(lastStageCmd(WRONG_ORDER));
+    expect(lastStageCmd(crlf)).not.toBeNull();
+  });
+
+  it("finds a CMD on a CRLF line at all", () => {
+    // The narrowest statement of the bug: one stage, one CMD, CRLF endings.
+    const one = 'FROM node:22 AS run\r\nCMD ["node", "server.js"]\r\n';
+    expect(lastStageCmd(one)).toContain("server.js");
   });
 });
 

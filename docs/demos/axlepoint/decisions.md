@@ -1275,3 +1275,57 @@ literal, so no well-known password is left behind anywhere.
 - KPIs: MTBF delta -24% (inside the +/-35% band), critical=5 (inside 3-6). The
   top two risk scores TIE at 91, where the criteria ask for distinct tops. That
   is a re-seed away and purely cosmetic.
+
+## D-031: The reset alerts through a Slack bot token, not a webhook (2026-10-01)
+
+The reset refuses to run without an alert destination (D-024). Choosing that
+destination was put to Drew on 2026-09-30 and he picked "Slack via the Daedalus
+bot". That turned out not to be directly implementable, and the gap is worth
+recording because it is a shape that recurs.
+
+**A destination and a protocol are not the same decision.** `alert()` POSTed the
+bare value of `RESET_ALERT_WEBHOOK` with a `{text}` body and **no auth header** --
+that is a Slack *incoming webhook*. The credential that exists on the deploy host
+is `C:\Users\Drama\.secrets\slack.daedalus.bot.local`, which holds `xoxb-` and
+`xoxp-` tokens and zero occurrences of `hooks.slack.com` (checked by grepping for
+counts, printing no values). `_scripts\slack-daedalus.ps1` posts via
+`https://slack.com/api/chat.postMessage` with `Authorization: Bearer` and a
+`channel` field. Handing the bot token to the reset script would simply have
+failed. An approved, apparently-complete answer would have broken on first use.
+
+**The choice, and the warning that went with it.** Two ways to honour it: create
+an incoming webhook (no code change, and the narrower credential), or teach the
+script bot tokens. Drew was given the blast-radius argument explicitly -- a leaked
+webhook URL posts to one channel, while a leaked bot token posts as the bot
+anywhere it is a member and, with the scopes already on this one, reads channel
+history -- and chose the bot token on 2026-10-01 to avoid a Slack-admin step.
+Recorded as his call, made with the cost in view.
+
+Mitigated inside that choice, since the choice itself is settled: the token is
+never logged and never appears in an error string (asserted by a test); it stays
+out of the repository, in an env file beside the sidecar; and the channel is
+`D0C2YKLSTLM`, the DM with Drew that the Daedalus wrapper already defaults to, so
+the alert lands somewhere a human demonstrably reads. A dedicated chat:write-only
+token would be the real mitigation and cannot be minted without him.
+
+**chat.postMessage refuses with HTTP 200.** This is the reason the transport is
+its own module rather than three lines in `alert()`. Slack answers
+`{"ok": false, "error": "invalid_auth"}` under a 200 status. Checking `res.ok` --
+correct for a webhook, and what this script always did -- would report a
+*delivered* alert for a revoked token, a wrong channel id, or a bot removed from
+the channel. A false pass anywhere is bad; a false pass in the alerting path is
+the worst available, because this code's only job is to speak up when something
+else failed. So the bot path requires `body.ok === true` and reports Slack's own
+error code otherwise, and the test for that case is the control the rest of the
+file is built around.
+
+**A half-set credential is an error, not an absence.** `RESET_ALERT_SLACK_TOKEN`
+with no `RESET_ALERT_SLACK_CHANNEL` is exactly what an operator produces midway
+through setup. Treating it as "no destination configured" would turn a typo into
+silent loss of alerting, which is the failure the refusal exists to prevent, so
+both half-set shapes refuse by name -- including when the opt-out is also present,
+so a stray opt-out cannot mask a misconfiguration.
+
+Precedence when both transports are set: the webhook wins, because it is the
+narrower credential and it is what the script accepted first. The run says so
+rather than choosing quietly.
