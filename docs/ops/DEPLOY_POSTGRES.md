@@ -143,18 +143,44 @@ this step is live, that promise is not kept.** A reset that exists and is never
 scheduled looks exactly like a reset that works: the pages render, the demo
 behaves, and visitor data ages past its window in silence.
 
-Create the sidecar's env file, **outside the repo**:
+Create the sidecar's env file at
+`C:\Users\Drama\.secrets\axlepoint_reset.local.txt` -- the path
+`ops/reset-sidecar/compose.yml` reads, via the same
+`${EDGE_SECRETS_DIR:-...}` indirection the edge compose uses for
+`demo_env_axlepoint.local.txt`.
+
+**Not beside the compose file.** That is what this runbook said until
+2026-10-01 and it is unsafe here for two checked reasons: `.gitignore` matches
+`.env*.local`, which does **not** match `axlepoint-reset.env` (`git
+check-ignore` confirmed the path was not ignored), and Google Drive for desktop
+two-way mirrors `C:\dev`, so anything secret under this tree is uploaded and a
+Drive copy outlives a local delete. Defensive ignore patterns were added for
+the old path, but the correct location is outside the repository.
 
 ```
-# axlepoint-reset.env  -- NEVER COMMIT THIS
+# C:\Users\Drama\.secrets\axlepoint_reset.local.txt  -- NEVER COMMIT THIS
 DATABASE_URL=postgres://demo_reset:<password>@<neon-host>/<db>?sslmode=require
-RESET_ALERT_WEBHOOK=<a destination a human actually reads>
+
+# An alert destination. EITHER a Slack incoming webhook:
+RESET_ALERT_WEBHOOK=https://hooks.slack.com/services/...
+# OR a Slack bot token with a channel (what this deployment uses):
+RESET_ALERT_SLACK_TOKEN=xoxb-...
+RESET_ALERT_SLACK_CHANNEL=D0C2YKLSTLM
 ```
 
-Both are required. The script **refuses to start** without
-`RESET_ALERT_WEBHOOK`, because the recurring version of this mistake is an
-alert that fires correctly into a channel nobody reads. The opt-out exists and
-is deliberately awkward; if you find yourself typing it in production, stop.
+`DATABASE_URL` and one alert destination are required. The script **refuses to
+start** without a destination, because the recurring version of this mistake is
+an alert that fires correctly into a channel nobody reads. The opt-out exists
+and is deliberately awkward; if you find yourself typing it in production, stop.
+
+A **half-set** bot credential is a refusal too, not a fallthrough: a token with
+no channel names no destination, and treating that as "no alert configured"
+would turn a typo into silent loss of alerting.
+
+The two transports are not interchangeable and the bot token is the wider
+credential -- see D-031 and `src/lib/reset-alert.ts`. Prefer a webhook if one
+exists; this deployment uses the bot token because that is the credential the
+host has.
 
 Use the `demo_reset` credential, **never the app's and never the admin's**. The
 reset's `DELETE` carries no `WHERE` clause -- RLS is what scopes it -- so as a

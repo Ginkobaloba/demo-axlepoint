@@ -6,6 +6,10 @@
  *   RESET_ALERT_WEBHOOK=https://hooks.slack.com/... \
  *   npm run db:reset
  *
+ * The alert destination may instead be a Slack bot token plus a channel
+ * (RESET_ALERT_SLACK_TOKEN + RESET_ALERT_SLACK_CHANNEL). Both transports, and
+ * the reason they are not interchangeable, live in src/lib/reset-alert.ts.
+ *
  * THIS SCRIPT DOES NOT SCHEDULE ITSELF. On SQLite the reset was triggered from
  * getDb() inside the request path, throttled by a module-level timestamp --
  * which does not survive a process restart, so *the throttle broke before the
@@ -26,27 +30,25 @@
  */
 import { Pool, type PoolClient } from "pg";
 import { resetTenantFromPristine } from "../src/lib/demo-reset";
+import {
+  ALERT_OPTOUT,
+  deliverAlert,
+  resolveAlertTarget,
+  type AlertTarget,
+} from "../src/lib/reset-alert";
 
 const TENANT = process.env.AXLEPOINT_SEED_TENANT ?? "sample";
-const OPTOUT = "i-will-not-be-told-about-failures";
+
+/** Resolved once at startup, so a misconfiguration is a startup error. */
+let alertTarget: AlertTarget | null = null;
 
 async function alert(message: string): Promise<void> {
-  const hook = process.env.RESET_ALERT_WEBHOOK;
-  if (!hook) return; // already validated at startup
-  try {
-    const res = await fetch(hook, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: `[axlepoint reset] ${message}` }),
-    });
-    if (!res.ok) {
-      console.error(`alert POST returned ${res.status}; the message did not land.`);
-    }
-  } catch (err) {
+  if (!alertTarget) return; // already validated in main()
+  const delivery = await deliverAlert(alertTarget, message, (url, init) => fetch(url, init));
+  if (!delivery.delivered) {
     // An alert that cannot be delivered must still be visible somewhere.
-    console.error(
-      `alert POST failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    // deliverAlert's detail never contains the token.
+    console.error(`alert not delivered: ${delivery.detail}`);
   }
 }
 
@@ -87,16 +89,18 @@ async function main(): Promise<number> {
     );
     return 2;
   }
-  if (!process.env.RESET_ALERT_WEBHOOK && process.env.RESET_ALERT_OPTOUT !== OPTOUT) {
-    console.error(
-      "RESET_ALERT_WEBHOOK is not set.\n" +
-        "  A reset that fails silently is worse than one that does not run: the\n" +
-        "  demo keeps serving visitor data past its retention window while every\n" +
-        "  dashboard looks fine. Point it at somewhere a human actually reads.\n" +
-        `  To run without alerting anyway: RESET_ALERT_OPTOUT=${OPTOUT}`,
-    );
+  const resolved = resolveAlertTarget(process.env);
+  for (const warning of resolved.warnings) console.error(warning);
+  if (!resolved.target) {
+    console.error(resolved.error);
     return 2;
   }
+  // Keep the opt-out visible in the run's own output: a reset that is
+  // deliberately not alerting should say so every time, not quietly.
+  if (resolved.target.kind === "optout") {
+    console.error(`Running with no alert destination (RESET_ALERT_OPTOUT=${ALERT_OPTOUT}).`);
+  }
+  alertTarget = resolved.target;
 
   const pool = new Pool({ connectionString: url });
   const startedAt = new Date();

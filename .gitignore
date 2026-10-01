@@ -37,3 +37,10 @@ next-env.d.ts
 
 # generated demo database
 /data/
+
+# Reset sidecar credentials. The canonical location is outside this repo (see
+# ops/reset-sidecar/compose.yml), because C:\dev is mirrored to Google Drive.
+# These patterns exist so a file created in the old, documented-but-unsafe spot
+# still cannot be committed: .env*.local did not match axlepoint-reset.env.
+ops/reset-sidecar/*.env
+axlepoint-reset.env
