@@ -437,12 +437,16 @@ function assertAndReturnClaims(
  * uses this; tests build their own config so they can inject fetcher + now.
  */
 export function verifierConfigFromEnv(): VerifierConfig {
+  // The fallbacks match what production sets explicitly (the portal's JWKS on
+  // portal.paradigm.codes, the logical issuer auth.paradigm.codes). They used
+  // to name portal.projectnexuscode.org, which stops resolving when that
+  // domain lapses (2026-10/11); a container started without these env vars
+  // would then reject every portal token.
   const jwksUrl =
     process.env.PORTAL_JWKS_URL ??
-    "https://portal.projectnexuscode.org/.well-known/jwks.json";
+    "https://portal.paradigm.codes/.well-known/jwks.json";
   const expectedIssuer =
-    process.env.PORTAL_EXPECTED_ISSUER ??
-    "https://portal.projectnexuscode.org";
+    process.env.PORTAL_EXPECTED_ISSUER ?? "https://auth.paradigm.codes";
   const expectedAudience = process.env.PORTAL_EXPECTED_AUD ?? "axlepoint";
   return { jwksUrl, expectedIssuer, expectedAudience };
 }
