@@ -63,7 +63,33 @@ for i in $(seq 0 $((count-1))); do
   # then the strings match for free.
   landed="${probe#* }"
   acount="$(yq -r ".surfaces[$i].assertions | length" "$SMOKE")"
-  if yq -r ".surfaces[$i].assertions[].type" "$SMOKE" | grep -qx redirects_to; then redirect_declared=1; else redirect_declared=0; fi
+  # Capture yq's output BEFORE matching it. This was once
+  #
+  #   if yq -r "...assertions[].type" "$SMOKE" | grep -qx redirects_to
+  #
+  # which reddened this gate at random. `grep -q` exits on the FIRST match, so
+  # yq gets EPIPE while still writing the remaining types and exits non-zero;
+  # `set -o pipefail` (line 22) then makes the whole pipeline fail, the `if`
+  # takes the else branch, and a surface that DOES declare redirects_to is
+  # reported as "undeclared redirect".
+  #
+  # It is a race on whether yq flushed and exited before grep matched, which is
+  # why it looked like a site problem: on 2026-10-01 the same commit failed and
+  # then passed on a re-run. The width of the window is the number of types left
+  # unread, so the surface with four assertions flaked while its two-assertion
+  # neighbours, whose yq finishes sooner, did not.
+  #
+  # Capturing yq's output is necessary but NOT sufficient on its own:
+  # `printf ... | grep -q` still has a pipe, and printf can take EPIPE too, so
+  # that only narrows the window. Matching in bash removes the pipe entirely,
+  # spawns nothing, and cannot be short-circuited, so there is no race left to
+  # lose. scripts/pipefail-shortcircuit.test.mjs keeps the piped form out.
+  assertion_types="$(yq -r ".surfaces[$i].assertions[].type" "$SMOKE")"
+  if [[ $'\n'"$assertion_types"$'\n' == *$'\n'redirects_to$'\n'* ]]; then
+    redirect_declared=1
+  else
+    redirect_declared=0
+  fi
   if [ "$redirect_declared" = "0" ] && [ "$landed" != "$full" ]; then
     echo "  FAIL undeclared redirect: requested $full, landed on $landed. Declare a redirects_to assertion for this surface's expected destination, or point its url at $landed directly."
     fail=1
