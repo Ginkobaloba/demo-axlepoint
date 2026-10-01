@@ -40,7 +40,7 @@ export function ParadigmBanner() {
       <p className="truncate text-[13px] font-medium">
         Built by Paradigm Coding Solutions. Want one like it for your data?{" "}
         <a
-          href="https://projectnexuscode.org/contact"
+          href="https://paradigm.codes/contact"
           target="_blank"
           rel="noopener noreferrer"
           className="font-semibold underline underline-offset-2 hover:no-underline"

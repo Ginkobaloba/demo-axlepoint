@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
  *
  * The portal redirects users here with the JWT in the URL fragment:
  *
- *   https://axlepoint.projectnexuscode.org/#portal_token=<JWT>
+ *   https://axlepoint.paradigm.codes/#portal_token=<JWT>
  *
  * Fragments never reach an HTTP access log, so the token does not touch
  * any server's request log on its way in. We:
