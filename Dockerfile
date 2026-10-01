@@ -41,21 +41,6 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
-FROM node:22-bookworm-slim AS run
-WORKDIR /app
-ENV NODE_ENV=production \
-    PORT=3000 \
-    HOSTNAME=0.0.0.0
-COPY --from=build /app/.next/standalone ./
-COPY --from=build /app/.next/static ./.next/static
-COPY --from=build /app/public ./public
-# No /app/data: there is no database in the image. The chmod 444 that used to
-# protect the seed snapshot went with it -- that control existed to keep a
-# FILE pristine, and there is no file to keep pristine now.
-USER node
-EXPOSE 3000
-CMD ["node", "server.js"]
-
 # ---------------------------------------------------------------------------
 # The reset sidecar. Same build context, so it CANNOT drift from the reset the
 # app was tested against -- it runs the repo's own scripts/reset-demo.ts rather
@@ -82,3 +67,35 @@ USER node
 # first -- a restarted sidecar that waited 6h would leave exactly the gap the
 # reset exists to close.
 CMD ["sh", "-c", "while true; do npm run db:reset || echo '[sidecar] reset failed; see the alert'; sleep \"${RESET_INTERVAL_SECONDS:-21600}\"; done"]
+
+# ---------------------------------------------------------------------------
+# The app runtime. THIS STAGE IS DELIBERATELY LAST IN THE FILE.
+#
+# `docker build` with no `--target` builds the LAST stage, and
+# cloudflare-config/scripts/deploy-demo.ps1 builds every demo without one --
+# it is shared by four demos, so it cannot name a stage this Dockerfile
+# happens to have. The stage order is therefore not cosmetic: it IS the
+# deployed artifact.
+#
+# This was not hypothetical. The reset stage was originally appended after
+# this one, so `demo-axlepoint:latest` became the reset loop; the container
+# came up, held port 8102, and never listened on 3000. nginx and the tunnel
+# returned a correct 502 for 2.5 days and nothing else complained.
+#
+# scripts/dockerfile-stages.test.mjs asserts this ordering, because a comment
+# asking the next person to preserve it is not a control.
+# ---------------------------------------------------------------------------
+FROM node:22-bookworm-slim AS run
+WORKDIR /app
+ENV NODE_ENV=production \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+COPY --from=build /app/.next/standalone ./
+COPY --from=build /app/.next/static ./.next/static
+COPY --from=build /app/public ./public
+# No /app/data: there is no database in the image. The chmod 444 that used to
+# protect the seed snapshot went with it -- that control existed to keep a
+# FILE pristine, and there is no file to keep pristine now.
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
