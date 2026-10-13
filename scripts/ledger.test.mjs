@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { checkEntry, listEntries, runCheck } from "./ledger.mjs";
+import { checkEntry, FIELDS, listEntries, runCheck, scaffold } from "./ledger.mjs";
 
 const VALID = [
   "# 2026-09-19 16:13 CDT - a valid entry",
@@ -83,5 +83,46 @@ describe("ledger check", () => {
     expect(checkEntry("2026-09-19-1613-x.md", VALID.replace("16:13", "17:13")).join()).toMatch(/does not match the file name/);
     expect(checkEntry(VALID_NAME, VALID.replace("a reason", "a — reason")).join()).toMatch(/em dash/);
     expect(checkEntry("nope.md", VALID).join()).toMatch(/name must be/);
+  });
+});
+
+// The 2026-10-13 false pass (cloudflare-config PR #48): an untouched "new"
+// scaffold has every label and no content, and "check" reported it as valid.
+// A label with nothing after it is not a field. The scaffold test feeds the
+// real scaffold output, not a hand-written copy, so it follows "new".
+const BLANK_FIELD_NAME = "2026-09-19-1200-probe-entry.md";
+const BLANK_FIELD_BASE = [
+  "# 2026-09-19 12:00 CDT - probe entry",
+  "- **Who:** test",
+  "- **Change:** test",
+  "- **Why:** test",
+  "- **State after:** test",
+  "- **Refs:** test",
+  "",
+].join("\n");
+
+describe("blank required fields", () => {
+  it("the blank scaffold from new fails, naming every empty field", () => {
+    const { name, body } = scaffold("probe entry", new Date(2026, 9, 13, 11, 13));
+    const problems = checkEntry(name, body);
+    expect(problems).toHaveLength(FIELDS.length);
+    for (const field of FIELDS) {
+      expect(problems.some((p) => p.includes("**" + field + ":**") && p.endsWith("is empty"))).toBe(true);
+    }
+  });
+
+  it("one blank field among filled ones fails", () => {
+    const text = BLANK_FIELD_BASE.replace("- **Refs:** test", "- **Refs:**   ");
+    expect(checkEntry(BLANK_FIELD_NAME, text)).toEqual([BLANK_FIELD_NAME + ': "- **Refs:**" is empty']);
+  });
+
+  it("a field whose content starts on an indented continuation line passes", () => {
+    const text = BLANK_FIELD_BASE.replace("- **Change:** test", "- **Change:**\n  1. first item\n  2. second item");
+    expect(checkEntry(BLANK_FIELD_NAME, text)).toEqual([]);
+  });
+
+  it("a blank field followed directly by the next field is not rescued by it", () => {
+    const text = BLANK_FIELD_BASE.replace("- **Who:** test", "- **Who:**");
+    expect(checkEntry(BLANK_FIELD_NAME, text)).toEqual([BLANK_FIELD_NAME + ': "- **Who:**" is empty']);
   });
 });
