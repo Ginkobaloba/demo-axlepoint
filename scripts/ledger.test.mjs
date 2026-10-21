@@ -1,87 +1,128 @@
-// Tests for the ledger check's three states. Run: npm test
+// Regression tests for `node scripts/ledger.mjs check`.
 //
-// The case that matters is zero entries: `check` used to print
-// "0 entries, 0 problem(s)" and exit 0 when the directory was missing or
-// empty, so a move, a rename or a wrong path left the check green while it
-// inspected nothing.
-import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+// The case these exist for: this repo's copy of the checker predated
+// paradigm-site PR #104, so it counted entries without asking whether the
+// directory existed. `listEntries` returns [] for a missing directory, so
+// against a DELETED or EMPTY docs/ledger the checker printed
+// "ledger: 0 entries, 0 problem(s)." and exited 0. Our ci.yml runs
+// `node scripts/ledger.mjs check` as a build step, so that zero case was a
+// step that passed while inspecting nothing.
+//
+// The two zero cases are tested separately because they have different causes
+// (gone versus empty) and a guard aimed at one can miss the other.
+//
+// Deliberately uses node:test and node:assert only. ci.yml pins Node and
+// notes that scripts/ledger.mjs has no dependencies; adding a test runner to a
+// Terraform repo would make that false.
+//
+// Run: node --test scripts/ledger.test.mjs
+// Runs under `node --test` and under vitest: several repos collect scripts/**/*.test.mjs
+// with vitest, which ignores tests registered with node:test and fails the file.
+const { test } = process.env.VITEST ? await import("vitest") : await import("node:test");
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { checkEntry, listEntries, runCheck } from "./ledger.mjs";
+import { FIELDS, checkEntry, runCheck, scaffold } from "./ledger.mjs";
 
-const VALID = [
-  "# 2026-09-19 16:13 CDT - a valid entry",
-  "- **Who:** dev-44",
-  "- **Change:** something concrete",
-  "- **Why:** a reason",
-  "- **State after:** what is true now",
-  "- **Refs:** PR #1",
+const VALID_ENTRY = [
+  "# 2026-09-19 12:00 CDT - probe entry",
+  "- **Who:** test",
+  "- **Change:** test",
+  "- **Why:** test",
+  "- **State after:** test",
+  "- **Refs:** test",
   "",
 ].join("\n");
-const VALID_NAME = "2026-09-19-1613-a-valid-entry.md";
 
-function tmp() {
-  return mkdtempSync(join(tmpdir(), "ledger-test-"));
+/** Collect log/err output instead of printing it. */
+function capture() {
+  const lines = [];
+  return { lines, log: (m) => lines.push(String(m)), err: (m) => lines.push(String(m)) };
 }
 
-function capture(dir) {
-  const out = [];
-  const errs = [];
-  const code = runCheck(dir, (m) => out.push(m), (m) => errs.push(m));
-  return { code, out: out.join("\n"), errs: errs.join("\n") };
+function withTempDir(fn) {
+  const base = mkdtempSync(join(tmpdir(), "ledger-test-"));
+  try {
+    return fn(base);
+  } finally {
+    rmSync(base, { recursive: true, force: true });
+  }
 }
 
-describe("ledger check", () => {
-  it("check fails when docs/ledger is missing", () => {
-    const r = capture(join(tmp(), "docs", "ledger"));
-    expect(r.code).toBe(1);
-    expect(r.errs).toMatch(/does not exist/);
-    expect(r.out).not.toMatch(/0 entries, 0 problem/);
+test("a missing directory fails and says so", () => {
+  withTempDir((base) => {
+    const dir = join(base, "docs", "ledger"); // deliberately never created
+    const out = capture();
+    const code = runCheck(dir, out.log, out.err);
+    assert.equal(code, 1, "a missing ledger directory must fail");
+    assert.match(out.lines.join("\n"), /does not exist/);
+    assert.match(out.lines.join("\n"), /nothing was checked/);
   });
+});
 
-  it("check fails when docs/ledger has zero entries", () => {
-    const dir = join(tmp(), "ledger");
+test("an empty directory fails with a different message", () => {
+  withTempDir((base) => {
+    const dir = join(base, "docs", "ledger");
     mkdirSync(dir, { recursive: true });
-    const r = capture(dir);
-    expect(r.code).toBe(1);
-    expect(r.errs).toMatch(/no entries found/);
+    const out = capture();
+    const code = runCheck(dir, out.log, out.err);
+    assert.equal(code, 1, "an empty ledger directory must fail");
+    assert.match(out.lines.join("\n"), /no entries found/);
   });
+});
 
-  it("README alone is still no entries", () => {
-    const dir = join(tmp(), "ledger");
+test("one valid entry passes", () => {
+  withTempDir((base) => {
+    const dir = join(base, "docs", "ledger");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "README.md"), "# Ledger\n");
-    expect(capture(dir).code).toBe(1);
+    writeFileSync(join(dir, "2026-09-19-1200-probe-entry.md"), VALID_ENTRY, "utf8");
+    const out = capture();
+    const code = runCheck(dir, out.log, out.err);
+    assert.equal(code, 0, "a well formed entry must pass");
+    assert.match(out.lines.join("\n"), /1 entries, 0 problem/);
   });
+});
 
-  it("check passes on a normal tree", () => {
-    const dir = join(tmp(), "ledger");
+test("a malformed entry still fails", () => {
+  withTempDir((base) => {
+    const dir = join(base, "docs", "ledger");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, VALID_NAME), VALID);
-    const r = capture(dir);
-    expect(r.code).toBe(0);
-    expect(r.out).toMatch(/1 entries, 0 problem/);
+    writeFileSync(join(dir, "2026-09-19-1200-probe-entry.md"), "# wrong heading\n", "utf8");
+    const out = capture();
+    const code = runCheck(dir, out.log, out.err);
+    assert.equal(code, 1, "a malformed entry must fail");
   });
+});
 
-  it("a malformed entry still fails", () => {
-    const dir = join(tmp(), "ledger");
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, VALID_NAME), VALID.replace("- **Why:** a reason\n", ""));
-    const r = capture(dir);
-    expect(r.code).toBe(1);
-    expect(r.errs).toMatch(/missing "- \*\*Why:\*\*"/);
-  });
+// The 2026-10-13 false pass: an untouched `new` scaffold has every label and
+// no content, and `check` used to report it as valid. Feed it the real
+// scaffold output, not a hand-written copy, so the test follows `new`.
+test("the blank scaffold from `new` fails, naming every empty field", () => {
+  const { name, body } = scaffold("probe entry", new Date(2026, 9, 13, 11, 13));
+  const problems = checkEntry(name, body);
+  assert.equal(problems.length, FIELDS.length, problems.join("\n"));
+  for (const field of FIELDS) {
+    assert.ok(problems.some((p) => p.includes(`**${field}:**`) && p.endsWith("is empty")), `${field} not reported`);
+  }
+});
 
-  it("the real ledger of this repo is valid and not empty", () => {
-    expect(listEntries().length).toBeGreaterThan(0);
-    expect(runCheck(undefined, () => {}, () => {})).toBe(0);
-  });
+test("one blank field among filled ones fails", () => {
+  const text = VALID_ENTRY.replace("- **Refs:** test", "- **Refs:**   ");
+  assert.deepEqual(checkEntry("2026-09-19-1200-probe-entry.md", text), [
+    '2026-09-19-1200-probe-entry.md: "- **Refs:**" is empty',
+  ]);
+});
 
-  it("checkEntry still catches name/heading mismatches and em dashes", () => {
-    expect(checkEntry("2026-09-19-1613-x.md", VALID.replace("16:13", "17:13")).join()).toMatch(/does not match the file name/);
-    expect(checkEntry(VALID_NAME, VALID.replace("a reason", "a — reason")).join()).toMatch(/em dash/);
-    expect(checkEntry("nope.md", VALID).join()).toMatch(/name must be/);
-  });
+test("a field whose content starts on an indented continuation line passes", () => {
+  const text = VALID_ENTRY.replace("- **Change:** test", "- **Change:**\n  1. first item\n  2. second item");
+  assert.deepEqual(checkEntry("2026-09-19-1200-probe-entry.md", text), []);
+});
+
+test("a blank field followed directly by the next field is not rescued by it", () => {
+  const text = VALID_ENTRY.replace("- **Who:** test", "- **Who:**");
+  assert.deepEqual(checkEntry("2026-09-19-1200-probe-entry.md", text), [
+    '2026-09-19-1200-probe-entry.md: "- **Who:**" is empty',
+  ]);
 });

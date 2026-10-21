@@ -11,7 +11,7 @@ synthetic: sites, machines, people, parts, and every sensor reading.
 
 ## Stack
 
-- Next.js 14 (App Router, standalone output), TypeScript, Tailwind CSS
+- Next.js 15.5 (App Router, standalone output), TypeScript, Tailwind CSS
 - SQLite via better-sqlite3, generated at build time by a seeded,
   deterministic data generator
 - Recharts for telemetry and reporting charts
@@ -166,3 +166,7 @@ aggregation into an explainable risk score). A production deployment would
 replace the detector with a trained sequence model on historical failure
 data behind the same scoring interface; the UX, explanation panel, and
 work-order drafting flow stay as they are.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
