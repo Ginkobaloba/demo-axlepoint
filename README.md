@@ -166,3 +166,7 @@ aggregation into an explainable risk score). A production deployment would
 replace the detector with a trained sequence model on historical failure
 data behind the same scoring interface; the UX, explanation panel, and
 work-order drafting flow stay as they are.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
