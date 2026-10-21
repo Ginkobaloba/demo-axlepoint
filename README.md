@@ -11,7 +11,7 @@ synthetic: sites, machines, people, parts, and every sensor reading.
 
 ## Stack
 
-- Next.js 14 (App Router, standalone output), TypeScript, Tailwind CSS
+- Next.js 15.5 (App Router, standalone output), TypeScript, Tailwind CSS
 - SQLite via better-sqlite3, generated at build time by a seeded,
   deterministic data generator
 - Recharts for telemetry and reporting charts
