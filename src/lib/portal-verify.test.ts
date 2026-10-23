@@ -237,8 +237,12 @@ describe("verifierConfigFromEnv", () => {
     delete process.env.PORTAL_EXPECTED_AUD;
     try {
       const cfg = verifierConfigFromEnv();
-      expect(cfg.jwksUrl).toBe(JWKS_URL);
-      expect(cfg.expectedIssuer).toBe(ISS);
+      // The production values, not this file's fixture issuer: the fallback
+      // must never name the lapsing projectnexuscode.org domain.
+      expect(cfg.jwksUrl).toBe(
+        "https://portal.paradigm.codes/.well-known/jwks.json",
+      );
+      expect(cfg.expectedIssuer).toBe("https://auth.paradigm.codes");
       expect(cfg.expectedAudience).toBe(AUD);
     } finally {
       process.env = prior;

@@ -15,7 +15,7 @@ const plexMono = IBM_Plex_Mono({
   variable: "--font-plex-mono",
 });
 
-const SITE_URL = "https://axlepoint.projectnexuscode.org";
+const SITE_URL = "https://axlepoint.paradigm.codes";
 const SITE_DESCRIPTION =
   "Asset health and maintenance operations for heavy industry. Predictive failure risk scoring, work order management, and parts readiness in one platform.";
 

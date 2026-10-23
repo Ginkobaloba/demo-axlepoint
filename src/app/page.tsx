@@ -273,7 +273,7 @@ export default function MarketingPage() {
           <p>
             AxlePoint Industrial is a fictional product demo.{" "}
             <a
-              href="https://projectnexuscode.org"
+              href="https://paradigm.codes"
               className="font-medium text-forest hover:underline"
             >
               Built by Paradigm Coding Solutions

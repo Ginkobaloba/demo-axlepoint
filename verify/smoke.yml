@@ -9,7 +9,7 @@
 #   json_path_equals  -- checks that a JSONPath expression equals `expect`
 
 target: demo-axlepoint
-deploy_url: https://axlepoint.projectnexuscode.org
+deploy_url: https://axlepoint.paradigm.codes
 
 surfaces:
   - name: home

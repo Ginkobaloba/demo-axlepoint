@@ -6,7 +6,7 @@ predictive failure risk scoring over synthetic sensor telemetry, work order
 management, preventive scheduling, parts inventory, and reporting for a
 100-asset industrial fleet.
 
-Live at https://axlepoint.projectnexuscode.org. Everything in it is
+Live at https://axlepoint.paradigm.codes (moved from axlepoint.projectnexuscode.org, which redirects until that domain lapses). Everything in it is
 synthetic: sites, machines, people, parts, and every sensor reading.
 
 ## Stack
